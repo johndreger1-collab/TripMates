@@ -135,8 +135,8 @@ in separate commits; every server file and every inline `<script>` passes a
 syntax check; the new styles were checked in a browser, light and dark.
 
 Owner steps to finish R0:
-1. Approve `clasp push` (Claude Code asks first). This changes the code in the
-   editor but not what the phones run, until a new deployment version.
+1. ~~`clasp push`~~ **Done 11 Nov 2026**; the live project matches git. Phones
+   still run the old deployment version until step 3.
 2. In the editor, run `runPhase1Tests` … `runPhase7Tests` and the
    `…PublicSmokeTest` / `runPhase2LiveChecks` functions. All must pass.
 3. When happy, Deploy → Manage deployments → edit → New version, and check the
