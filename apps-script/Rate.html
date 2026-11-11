@@ -1,0 +1,247 @@
+<script>
+/**
+ * Rate.html: the rating screen. A full-screen overlay (like Add place) with one
+ * row of Poor / OK / Good / Great / Skip buttons per criterion, built from the
+ * Criteria tab data in App.S.criteria. Shares helpers with Client.html via App.
+ *
+ * Modes (only offered when you already rated this place):
+ *   update  the new row replaces your latest rating (same visit). Default if it was < 12 h ago.
+ *   new     a new visit, starting blank.
+ * The server works out the real score; the live score here uses the same formula
+ * so what you see is what is saved.
+ */
+(function () {
+  'use strict';
+  var h = App.h, $ = App.$, clear = App.clear;
+  var LEVELS = [[1, 'Poor'], [2, 'OK'], [3, 'Good'], [4, 'Great']];
+  var RETURNS = ['Yes', 'Maybe', 'No'];
+  var HINTS = { noise: '4 means pleasant for conversation.' };
+  var REUSE_HOURS = 12;
+
+  var R = null;   // state of the open screen, or null when closed
+  var E = {};     // live elements
+
+  /** Spec 4.2: weighted mean of non-skipped criteria, mapped to 0-100. null when all skipped. */
+  function score(scores, criteria) {
+    var sum = 0, weights = 0;
+    criteria.forEach(function (c) {
+      var v = scores[c.key];
+      if (v === null || v === undefined) return;
+      sum += c.weight * v; weights += c.weight;
+    });
+    return weights ? (((sum / weights) - 1) / 3) * 100 : null;
+  }
+
+  function setMsg(text, isError) {
+    if (!E.msg) return;
+    E.msg.textContent = text || '';
+    E.msg.className = 'add-msg' + (isError ? ' err' : '');
+  }
+
+  // ---------------------------------------------------------------- open / close
+  function open(placeId) {
+    var S = App.S;
+    var p = App.byId(placeId);
+    if (!p || !S.trip) return;
+    if (p.category === 'Anchor') { App.toast('Reference points are not rated.', true); return; }
+    var st = R = {
+      place: p, criteria: (S.criteria && S.criteria[p.category]) || [], mine: null, mode: 'new',
+      scores: {}, wouldReturn: '', pint: '', notes: '', saving: false, loaded: false
+    };
+    var root = $('rate');
+    clear(root);
+    root.hidden = false;
+    root.scrollTop = 0;
+    document.body.classList.add('noscroll');
+    build(root);
+    var t = $('rate-title'); if (t) t.focus();
+
+    // Always ask the server, so "your last rating" is current.
+    App.api('getRatings', p.placeId).then(function (rows) {
+      if (R !== st) return;
+      S.ratings[p.placeId] = rows;
+      st.mine = rows.filter(function (r) { return r.userEmail === S.you && r.current; })[0] || null;
+      var age = st.mine ? Date.now() - new Date(st.mine.visitTimestamp).getTime() : Infinity;
+      st.loaded = true;
+      applyMode(st.mine && age >= 0 && age < REUSE_HOURS * 3600000 ? 'update' : 'new');
+    }).catch(function (e) {
+      if (R !== st) return;
+      st.loaded = true;
+      setMsg('Could not check your earlier ratings (' + e.message + '). You can still save this as a new rating.', true);
+      applyMode('new');
+    });
+  }
+
+  function close() {
+    R = null; E = {};
+    var root = $('rate');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
+  // ---------------------------------------------------------------- building the screen
+  function build(root) {
+    var p = R.place;
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { id: 'rate-title', tabindex: '-1', text: 'Rate ' + p.name }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: close })
+    ]));
+    root.appendChild(h('p', { class: 'muted', text: [App.CAT_LABEL[p.category], p.area, p.city].filter(Boolean).join(' \u00b7 ') }));
+    E.msg = h('p', { class: 'add-msg', role: 'status', 'aria-live': 'polite' });
+    E.mode = h('div', {});
+    E.form = h('div', {}, [h('p', { class: 'muted', text: 'Loading...' })]);
+    root.appendChild(E.msg);
+    root.appendChild(E.mode);
+    root.appendChild(E.form);
+  }
+
+  /** Sets which rating the form starts from, then redraws the mode switch and the form. */
+  function applyMode(mode) {
+    var m = mode === 'update' && R.mine ? R.mine : null;
+    R.mode = m ? 'update' : 'new';
+    R.scores = {};
+    R.criteria.forEach(function (c) {
+      var v = m && m.scores ? m.scores[c.key] : null;
+      R.scores[c.key] = (v === 1 || v === 2 || v === 3 || v === 4) ? v : null;
+    });
+    R.wouldReturn = m && m.wouldReturn ? m.wouldReturn : '';
+    R.pint = m && m.pintPrice !== null && m.pintPrice !== undefined ? String(m.pintPrice) : '';
+    R.notes = m && m.notes ? m.notes : '';
+    renderMode();
+    renderForm();
+  }
+
+  function renderMode() {
+    clear(E.mode);
+    if (!R.mine) return;
+    var when = App.fmtVisit(R.mine.visitTimestamp);
+    var last = R.mine.personScore !== null ? ', score ' + Math.round(R.mine.personScore) : ', no score';
+    E.mode.appendChild(h('p', { class: 'muted', text: 'Your last rating: ' + when + last + '.' }));
+    var seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Update your last rating or log a new visit' });
+    [['update', 'Update my last rating'], ['new', 'Log a new visit']].forEach(function (m) {
+      seg.appendChild(h('button', { type: 'button', 'aria-pressed': String(R.mode === m[0]), text: m[1],
+        onclick: function () { if (R.mode !== m[0]) applyMode(m[0]); } }));
+    });
+    E.mode.appendChild(seg);
+  }
+
+  function critRow(c) {
+    var group = h('div', { class: 'ratepick', role: 'group', 'aria-label': c.label });
+    function paint() {
+      Array.prototype.forEach.call(group.querySelectorAll('button'), function (b) {
+        var n = b.getAttribute('data-n') === 'skip' ? null : Number(b.getAttribute('data-n'));
+        b.setAttribute('aria-pressed', String(R.scores[c.key] === n));
+      });
+    }
+    LEVELS.forEach(function (l) {
+      group.appendChild(h('button', { type: 'button', 'data-n': String(l[0]), 'aria-label': c.label + ': ' + l[1],
+        text: l[0] + ' ' + l[1], onclick: function () { R.scores[c.key] = l[0]; paint(); updateLive(); } }));
+    });
+    group.appendChild(h('button', { type: 'button', class: 'skip', 'data-n': 'skip', 'aria-label': c.label + ': skip',
+      text: 'Skip', onclick: function () { R.scores[c.key] = null; paint(); updateLive(); } }));
+    paint();
+    return h('div', { class: 'rate-crit' }, [
+      h('div', { class: 'label', text: c.label }),
+      HINTS[c.key] ? h('p', { class: 'muted', text: HINTS[c.key] }) : null,
+      group
+    ]);
+  }
+
+  function renderForm() {
+    var p = R.place;
+    clear(E.form);
+
+    if (!R.criteria.length) {
+      E.form.appendChild(h('p', { class: 'warnline', text: 'No active criteria for this type of place. You can still record whether you would return, and a note.' }));
+    }
+    E.form.appendChild(h('p', { class: 'muted', text: 'Tap what you noticed. Anything you leave on Skip is left out of the score.' }));
+    R.criteria.forEach(function (c) { E.form.appendChild(critRow(c)); });
+
+    // Would return
+    var wr = h('div', { class: 'seg', role: 'group', 'aria-label': 'Would you go back?' });
+    function paintWR() {
+      Array.prototype.forEach.call(wr.querySelectorAll('button'), function (b) {
+        b.setAttribute('aria-pressed', String(R.wouldReturn === b.textContent));
+      });
+    }
+    RETURNS.forEach(function (v) {
+      wr.appendChild(h('button', { type: 'button', 'aria-pressed': 'false', text: v,
+        onclick: function () { R.wouldReturn = R.wouldReturn === v ? '' : v; paintWR(); } }));
+    });
+    paintWR();
+    E.form.appendChild(h('div', { class: 'field' }, [
+      h('div', { class: 'label', text: 'Would you go back? (optional, tap again to clear)' }), wr
+    ]));
+
+    // Pint price, pubs only
+    if (p.category === 'Pub') {
+      var cur = (App.S.settings && App.S.settings.currency) || 'GBP';
+      var pint = h('input', { type: 'number', id: 'rate-pint', min: '0', max: '100', step: '0.01', inputmode: 'decimal', autocomplete: 'off' });
+      pint.value = R.pint;
+      pint.addEventListener('input', function () { R.pint = pint.value; });
+      E.form.appendChild(h('div', { class: 'field' }, [
+        h('label', { for: 'rate-pint', text: 'Price of a pint, ' + cur + ' (optional)' }), pint
+      ]));
+    }
+
+    // Notes
+    var notes = h('textarea', { id: 'rate-notes', maxlength: '1000' });
+    notes.value = R.notes;
+    notes.addEventListener('input', function () { R.notes = notes.value; });
+    E.form.appendChild(h('div', { class: 'field' }, [h('label', { for: 'rate-notes', text: 'Notes on this visit (optional)' }), notes]));
+
+    // Live score + save
+    E.score = h('p', { class: 'livescore', role: 'status', 'aria-live': 'polite' });
+    E.save = h('button', { type: 'button', class: 'btn big', id: 'rate-save', text: R.mode === 'update' ? 'Save update' : 'Save rating', onclick: save });
+    E.form.appendChild(h('div', { class: 'sticky-save' }, [E.score, E.save]));
+    updateLive();
+  }
+
+  function updateLive() {
+    if (!E.score) return;
+    var s = score(R.scores, R.criteria);
+    E.score.textContent = s === null ? 'No score yet: everything is on Skip.' : 'Your score: ' + Math.round(s) + ' out of 100';
+  }
+
+  // ---------------------------------------------------------------- saving
+  function save() {
+    var st = R;
+    if (!st || st.saving || !st.loaded) return;
+    var p = st.place;
+    var pint = p.category === 'Pub' ? String(st.pint).trim() : '';
+    if (pint !== '' && !(isFinite(Number(pint)) && Number(pint) >= 0 && Number(pint) <= 100)) {
+      setMsg('The pint price must be a number between 0 and 100.', true);
+      var el = $('rate-pint'); if (el) el.focus();
+      return;
+    }
+    var payload = {
+      tripId: App.S.trip.tripId, placeId: p.placeId, scores: st.scores, wouldReturn: st.wouldReturn,
+      pintPrice: pint, notes: String(st.notes).trim(), updateLast: st.mode === 'update' && !!st.mine
+    };
+    st.saving = true;
+    E.save.disabled = true;
+    E.save.textContent = 'Saving...';
+    setMsg('');
+    App.api('saveRating', payload).then(function (res) {
+      App.upsertPlace(res.place);
+      delete App.S.ratings[p.placeId];
+      if (R === st) close();
+      App.renderAll();
+      App.toast('Rating saved');
+      App.openCard(p.placeId);
+    }).catch(function (e) {
+      st.saving = false;
+      App.toast(e.message, true);
+      if (R === st) {
+        setMsg(e.message, true);
+        E.save.disabled = false;
+        E.save.textContent = st.mode === 'update' ? 'Save update' : 'Save rating';
+      }
+    });
+  }
+
+  App.openRate = open;
+  App.closeRate = close;
+})();
+</script>

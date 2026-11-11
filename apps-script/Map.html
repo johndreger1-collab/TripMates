@@ -1,0 +1,125 @@
+<style>
+.rt-hit { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; }
+.rt-pin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center; font: 700 14px/1 system-ui, sans-serif; }
+.rt-pin.sq { border-radius: 6px; }
+.rt-unrated { background: var(--tone-unrated, #9aa0a6); color: #111; }
+.rt-red     { background: var(--tone-red, #d93025); color: #fff; }
+.rt-amber   { background: var(--tone-amber, #f9ab00); color: #111; }
+.rt-lgreen  { background: var(--tone-lgreen, #7bc67e); color: #111; }
+.rt-dgreen  { background: var(--tone-dgreen, #137333); color: #fff; }
+.rt-anchor  { background: var(--tone-anchor, #37474f); color: #fff; }
+.rt-draft   { background: #6a1b9a; color: #fff; font-size: 22px; width: 38px; height: 38px; }
+.rt-route   { background: #0b5d3b; color: #fff; }
+.rt-next    { background: #e65100; color: #fff; width: 40px; height: 40px; }
+.rt-routedone { background: #78909c; color: #111; }
+</style>
+<script>
+/**
+ * RTMap: the only code that touches Leaflet. Client.html and AddPlace.html use
+ * only this small API, so the map library can be swapped later without touching them.
+ *
+ *   var ctl = RTMap.create(containerId, {center:[lat,lng], zoom:14});
+ *   ctl.setPins(pins, onSelect, {passive:true})  pins: [{id, lat, lng, text, tone, title}]
+ *   ctl.setMe(lat, lng, accuracyMetres)          the blue "you are here" dot
+ *   ctl.fit() / ctl.flyTo(lat, lng, zoom)
+ *   ctl.onTap(function (lat, lng) {...})
+ *   ctl.setDraft(lat, lng, onMoved) / ctl.clearDraft()   one draggable pin
+ *   ctl.invalidate()  call after the container is shown or resized
+ *   ctl.destroy()
+ *
+ * tone is one of: unrated, red, amber, lgreen, dgreen, anchor.
+ */
+var RTMap = (function () {
+  var TONE_CLASS = { unrated: 'rt-unrated', red: 'rt-red', amber: 'rt-amber', lgreen: 'rt-lgreen', dgreen: 'rt-dgreen', anchor: 'rt-anchor',
+                    route: 'rt-route', routenext: 'rt-next', routedone: 'rt-routedone' };
+
+  function icon(cls, text, square) {
+    return L.divIcon({
+      className: '',
+      html: '<div class="rt-hit"><div class="rt-pin ' + cls + (square ? ' sq' : '') + '"></div></div>',
+      iconSize: [44, 44],
+      iconAnchor: [22, 22]
+    });
+  }
+
+  function pinIcon(p) {
+    var ic = icon(TONE_CLASS[p.tone] || 'rt-unrated', p.text, p.tone === 'anchor');
+    return ic;
+  }
+
+  function create(containerId, opts) {
+    if (typeof L === 'undefined') throw new Error('The map library did not load. Check your connection and reload.');
+    opts = opts || {};
+    var map = L.map(containerId, { zoomControl: true }).setView(opts.center || [55.9533, -3.1883], opts.zoom || 14);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    var pinLayer = L.layerGroup().addTo(map);
+    var meLayer = L.layerGroup().addTo(map);
+       var routeLayer = L.layerGroup().addTo(map);
+    var draft = null;
+    var tapCb = null;
+    map.on('click', function (e) { if (tapCb) tapCb(e.latlng.lat, e.latlng.lng); });
+
+    return {
+      setPins: function (pins, onSelect, o) {
+        o = o || {};
+        pinLayer.clearLayers();
+        pins.forEach(function (p) {
+          var mk = L.marker([p.lat, p.lng], { icon: pinIcon(p), title: p.title || '', alt: p.title || '', keyboard: !o.passive, interactive: !o.passive });
+          // The number is drawn with a text node so it can never be treated as markup.
+          mk.on('add', function () {
+            var el = mk.getElement && mk.getElement();
+            var pin = el && el.querySelector('.rt-pin');
+            if (pin && !pin.firstChild) pin.appendChild(document.createTextNode(p.text));
+          });
+          if (!o.passive && onSelect) mk.on('click', function () { onSelect(p.id); });
+          mk.addTo(pinLayer);
+        });
+      },
+
+      setMe: function (lat, lng, acc) {
+        meLayer.clearLayers();
+        if (acc) L.circle([lat, lng], { radius: acc, color: '#1a73e8', weight: 1, fillOpacity: 0.1, interactive: false }).addTo(meLayer);
+        L.circleMarker([lat, lng], { radius: 8, color: '#fff', weight: 3, fillColor: '#1a73e8', fillOpacity: 1, interactive: false }).addTo(meLayer);
+      },
+setRoute: function (pts) {
+       routeLayer.clearLayers();
+       if (pts && pts.length > 1) L.polyline(pts, { color: '#e65100', weight: 4, opacity: 0.9, dashArray: '10 8', interactive: false }).addTo(routeLayer);
+     },
+      fit: function () {
+        var pts = [];
+        pinLayer.eachLayer(function (l) { pts.push(l.getLatLng()); });
+        if (!pts.length) return;
+        if (pts.length === 1) map.setView(pts[0], 16);
+        else map.fitBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 16 });
+      },
+
+      flyTo: function (lat, lng, zoom) { map.setView([lat, lng], zoom || 16); },
+
+      onTap: function (cb) { tapCb = cb; },
+
+      setDraft: function (lat, lng, onMoved) {
+        if (draft) { map.removeLayer(draft); draft = null; }
+        draft = L.marker([lat, lng], { icon: icon('rt-draft', '+', false), draggable: true, title: 'Drag to move the pin', keyboard: true });
+        draft.on('add', function () {
+          var el = draft.getElement && draft.getElement();
+          var pin = el && el.querySelector('.rt-pin');
+          if (pin && !pin.firstChild) pin.appendChild(document.createTextNode('+'));
+        });
+        draft.on('dragend', function () { var ll = draft.getLatLng(); if (onMoved) onMoved(ll.lat, ll.lng); });
+        draft.addTo(map);
+      },
+
+      clearDraft: function () { if (draft) { map.removeLayer(draft); draft = null; } },
+      invalidate: function () { map.invalidateSize(); },
+      destroy: function () { map.remove(); }
+    };
+  }
+
+  return { create: create };
+})();
+</script>

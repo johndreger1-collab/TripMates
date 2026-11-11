@@ -1,7 +1,8 @@
 # Status — Tripmates (formerly Rugby Trip Companion)
 
-*Last updated: 11 November 2026, from a full copy of the live scripts (the
-owner's "Travel App Scripting" document). Update this file at the end of every phase.*
+*Last updated: 11 November 2026, Phase R0 (live code pulled with `clasp clone`
+and committed as a baseline; defects 1-5, 10 and 11 fixed). Update this file at the
+end of every phase.
 
 ## One-line summary
 
@@ -9,7 +10,8 @@ The original Apps Script app is **feature-complete through Phase 7 (v1.1)**,
 every file passes a syntax check, and the owner has tested Phases 0-7 on phones.
 A handful of small defects are listed below. The next trip is in **early March
 2027**, so there is time to migrate first; the old app stays as the fallback.
-Next: Phase R0 (put the live code in GitHub as a baseline).
+R0 put the live code in GitHub (`apps-script/`). Next: finish R0 (owner pushes
+the fixes and runs the editor tests, see below), then Phase R1.
 
 ## Repository
 
@@ -27,7 +29,7 @@ deliberately not recorded in this public repo.
 Manifest: V8, time zone Europe/London, web app `executeAs: USER_ACCESSING`,
 `access: ANYONE`.
 
-Files (19): `appsscript.json`, `Code.gs`, `Setup.gs`, `Auth.gs`, `Data.gs`,
+Files (19; in `apps-script/` the `.gs` files are saved as `.js`, see D19): `appsscript.json`, `Code.gs`, `Setup.gs`, `Auth.gs`, `Data.gs`,
 `Geo.gs`, `Tests.gs`, `Index.html`, `Styles.html`, `Map.html`, `Client.html`,
 `AddPlace.html`, `Rate.html`, `Live.html`, `Route.html`, `Home.html`,
 `Tools.html`, `Extras.html`, `Phase1Check.html`.
@@ -43,9 +45,9 @@ Files (19): `appsscript.json`, `Code.gs`, `Setup.gs`, `Auth.gs`, `Data.gs`,
 | 4 | Nearby, live sync, check-in, tally, mood | Done | Yes, on phones (owner, Nov 2026) | |
 | 5 | Route builder, stale-save retry, legs, rhythm warning | Done | Yes, on phones (owner, Nov 2026). Confirm that S6 (two phones editing one route at once) was part of it | |
 | 6 | Get me home (floating button), match day, seed/CSV import, pins to review, members, settings | Done and wired in | Yes, on phones (owner, Nov 2026) | The `?page=phase1` member workaround has gone from the Trip tab |
-| 7 | Google Maps search shortcuts (`Extras.html`, `#find`), trip recap (`getTripRecap`), food nudge + wind-down (`Live.html`, `#nudgebar`, `PacingEnabled`), exact walking times for route legs (`getExactWalkingTimes`, `Maps.newDirectionFinder`) | Done | Yes, on phones (owner, Nov 2026) | Phase 7 styles are placeholders (defect 1) |
+| 7 | Google Maps search shortcuts (`Extras.html`, `#find`), trip recap (`getTripRecap`), food nudge + wind-down (`Live.html`, `#nudgebar`, `PacingEnabled`), exact walking times for route legs (`getExactWalkingTimes`, `Maps.newDirectionFinder`), route "Suggest order" (nearest neighbour + 2-opt, `Route.html`) | Done | Yes, on phones (owner, Nov 2026), except "Suggest order" (not phone-tested; owner wants it kept) | Styles fixed in R0 (defect 1) |
 
-Not built: route auto-optimisation suggestion, offline use, editing a trip after
+Not built: offline use, editing a trip after
 creation (`updateTrip`).
 
 ### Phase 0 spike results (recorded)
@@ -74,20 +76,22 @@ creation (`updateTrip`).
 
 ## Defects found in the live scripts (11 Nov 2026)
 
-All small. Fix them in R0b (old app) or carry them into the rewrite.
+All small. Re-checked against the cloned code in R0: every item below is
+confirmed. **1-5, 8, 10 and 11 are fixed in R0** (in git; live once the owner runs
+`clasp push`). 6, 7 and 9 carry into the rewrite; 12 is about the tests.
 
-1. **Phase 7 styles are placeholders.** `Styles.html` contains literally
+1. *(Fixed in R0.)* **Phase 7 styles are placeholders.** `Styles.html` contains literally
    `.nudgebar { ... }`, `.nudgebar .btn-row { ... }` and `.homefab.wind { ... }`
    (probably pasted from a chat summary). The food-nudge banner and the
    wind-down Get me home highlight are therefore unstyled.
-2. **Duplicate element IDs in `Index.html`:** `#matchbar` (twice), `#btn-home`
+2. *(Fixed in R0.)* **Duplicate element IDs in `Index.html`:** `#matchbar` (twice), `#btn-home`
    (twice), and `#home`, `#pinfix`, `#settings` (twice each). The code only finds
    the first of each, so it works, but delete the second copies.
-3. **`Styles.html` has a stray second `</style>`** and a repeated
+3. *(Fixed in R0.)* **`Styles.html` has a stray second `</style>`** and a repeated
    `.appbar .btn` rule. Harmless.
-4. **`Auth.gs` holds two copies of itself** (joined at `}/**`). The second copy
+4. *(Fixed in R0.)* **`Auth.gs` holds two copies of itself** (joined at `}/**`). The second copy
    wins, and it is the complete one (it has `requireAnyTrip_`). Delete the first.
-5. **`Tests.gs` has the Phase 5 test block three times** (`runPhase5Tests`,
+5. *(Fixed in R0; the three copies were identical.)* **`Tests.gs` has the Phase 5 test block three times** (`runPhase5Tests`,
    `runPhase5PublicSmokeTest` and their helpers). The last copy wins. Delete two.
 6. **Every global function is callable from the browser**, including test and
    demo functions (`runPhase6Tests` temporarily edits Settings; `createDemoTrip`).
@@ -95,10 +99,26 @@ All small. Fix them in R0b (old app) or carry them into the rewrite.
    trip. The rewrite fixes it properly with an action allow-list.
 7. **Members can open and edit the Sheet directly** (a consequence of
    "Execute as: User accessing"). The rewrite fixes this.
-8. **No `updateTrip`.** City, dates, fixture and kickoff cannot be changed after creation.
+8. *(Fixed in the old app in R0, D21.)* **No `updateTrip`.** City, dates,
+   fixture and kickoff could not be changed after creation. The trip owner now
+   has **Edit trip** on the Trip tab; edits reach other phones through the
+   live sync.
 9. **Route "Mark visited" does not record an ARRIVE check-in**, so the place does
    not become Been. Owner decided it should (D14); build it in R7.
-10. `Code.gs` header comment is out of date (still describes Phase 1).
+10. *(Fixed in R0.)* `Code.gs` header comment is out of date (still describes Phase 1).
+11. *(Found and fixed in R0.)* **Stray text on the map screen.** `Index.html`
+    had the literal text `+ Add place:` just before the "Search Google Maps"
+    button, so it showed on the map. The button itself had no position and sat
+    under "+ Add place" and "Get me home"; it now sits in the right-hand button
+    column, above "+ Add place".
+12. **Two editor tests assume a fresh spreadsheet** (found in R0, owner's run of
+    11 Nov 2026). `runPhase2Tests` "getTripData returns everything" fails when
+    `PacingEnabled` is not the default `false`; `runPhase6Tests` "Edinburgh
+    starter list loads once" fails when the Seed tab already holds other
+    Edinburgh rows, and **it writes the built-in 29-row list into the real Seed
+    tab** (27 rows were added on 11 Nov; the owner is checking them). Neither
+    is an app bug. Fix the tests in the rewrite (R2) so they never depend on or
+    change real Settings or Seed rows.
 
 Fixed since the 8 October snapshots: Phase 6 is wired in; Get me home is a
 floating button; `cleanupTestData_` now deletes `Routes` rows.
@@ -120,9 +140,33 @@ floating button; `cleanupTestData_` now deletes `Routes` rows.
 
 ## Next phase and schedule
 
-**R0: Repository baseline.** Skip R0b; the old app is tested and is the fallback.
-Fix defect 1 (Phase 7 placeholder styles) in the old app during R0 anyway, so
-the fallback looks right.
+**R0: Repository baseline: code done, owner steps left.**
+
+Done (11 Nov 2026): `apps-script/` holds the live project exactly as cloned
+(commit "Baseline: live Apps Script project…"); defects 1-5, 10 and 11 are fixed
+in separate commits; every server file and every inline `<script>` passes a
+syntax check; the new styles were checked in a browser, light and dark.
+
+Owner steps to finish R0:
+1. ~~`clasp push`~~ **Done 11 Nov 2026**; the live project matches git. Phones
+   still run the old deployment version until step 3.
+   Owner's editor run (11 Nov): all suites, smoke tests and live checks pass
+   except the two test-assumption failures in defect 12. Suggest order passed
+   on the phone. Edit trip and the moved "Search Google Maps" button were
+   added afterwards: push again, then run `runEditTripTests` and
+   `runEditTripPublicSmokeTest`.
+2. In the editor, run `runPhase1Tests` … `runPhase7Tests` and the
+   `…PublicSmokeTest` / `runPhase2LiveChecks` functions. All must pass.
+3. When happy, Deploy → Manage deployments → edit → New version, and check on
+   both phones: the map screen has no stray `+ Add place:` text; the food
+   nudge (`PacingEnabled=true`) and wind-down look right; and route
+   **Suggest order** works (zig-zag route of 4+ pinned stops → Suggest → Not
+   now changes nothing → Apply reorders and the other phone sees it within
+   ~20 s → Suggest again says "already about as short" → a visited stop stays
+   put → button disabled with one unvisited stop).
+
+Then **R1** (spike: sign-in, API, PWA on both phones). Skip R0b; the old app is
+tested and is the fallback.
 
 Suggested schedule for an early-March trip (about 16 weeks):
 

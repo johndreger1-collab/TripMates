@@ -1,0 +1,543 @@
+<script>
+/**
+ * Route.html: the Route tab. Shares helpers with Client.html and Live.html through App.
+ *
+ *   - Several routes per trip (e.g. "Friday crawl"). A route with no stops does not exist on the server.
+ *   - Stops are added from the place card ("Add to route"), reordered, marked visited, or removed.
+ *   - Changes show instantly and are saved in order from a queue. Each save names the route version it
+ *     started from; if someone else saved first the server says "stale" and sends the latest, and the
+ *     same change is applied to that and tried again. So two phones editing at once do not lose changes.
+ *   - Estimated walking times are straight-line x DetourFactor, always shown with "~".
+ *   - "Open in Google Maps" starts from your location, covers the stops not yet visited, and splits into
+ *     legs of MaxWaypoints waypoints plus a destination.
+ */
+(function () {
+  'use strict';
+  var h = App.h, $ = App.$, clear = App.clear, S = App.S;
+  var DRINK = { Pub: true, Whisky_Bar: true, Cocktails: true };
+  var RUN = 3;                     // this many drink stops in a row raises the rhythm warning
+
+  S.routes = [];                   // routes as last saved on the server, plus local drafts (local: true)
+  S.routeId = '';                  // the route being viewed and added to
+  var ctl = null, lastIds = '';
+  var pending = [];                // changes waiting to be saved: { routeId, fn(stops) -> stops | null }
+  var working = false, retries = 0, creating = false, deleteArmed = false, deleteTimer = null;
+ var EX = {}, exactBusy = false, exactMsg = '', sugg = null;   // exact times by coordinates; the pending order suggestion
+ function r5(n) { return Math.round(n * 1e5) / 1e5; }
+ function exKey(a, b) { return [a.lat, a.lng, b.lat, b.lng].map(r5).join(','); }
+  // ---------------------------------------------------------------- state helpers
+  function clone(a) { return JSON.parse(JSON.stringify(a)); }
+  function routeById(id) {
+    for (var i = 0; i < S.routes.length; i++) if (S.routes[i].routeId === id) return S.routes[i];
+    return null;
+  }
+  function active() { return routeById(S.routeId); }
+  function newId() { return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+  function placeOf(s) { return App.byId(s.placeId); }
+  function hasPin(p) { return !!p && p.lat !== null && p.lat !== undefined && p.lng !== null && p.lng !== undefined; }
+
+  /** What the person should see: the saved stops with their not-yet-saved changes applied on top. */
+  function viewStops(route) {
+    var st = clone(route.stops);
+    pending.forEach(function (p) { if (p.routeId === route.routeId) { var n = p.fn(st); if (n) st = n; } });
+    return st;
+  }
+
+  function defaultName() {
+    var n = S.routes.length + 1, used = {};
+    S.routes.forEach(function (r) { used[r.routeName] = true; });
+    while (used['Route ' + n]) n++;
+    return 'Route ' + n;
+  }
+
+  function makeDraft(name) {
+    var r = { routeId: newId(), routeName: name, updatedAt: '', local: true, stops: [] };
+    S.routes.push(r);
+    S.routeId = r.routeId;
+    return r;
+  }
+
+  /** Puts the server's version of a route (or its absence) into S.routes. */
+  function settle(routeId, route) {
+    var i = -1;
+    S.routes.forEach(function (r, k) { if (r.routeId === routeId) i = k; });
+    if (!route) { if (i >= 0) S.routes.splice(i, 1); }
+    else { route.local = false; if (i >= 0) S.routes[i] = route; else S.routes.push(route); }
+    if (!routeById(S.routeId)) S.routeId = S.routes.length ? S.routes[0].routeId : '';
+  }
+
+  /** Called by Live.html with every route list the server sends. Waits while our own saves are in flight. */
+  function routesLoad(list) {
+    if (working || pending.length) { S.routeStamp = ''; return; }     // ask again on the next poll instead
+    var drafts = S.routes.filter(function (r) { return r.local && !list.some(function (x) { return x.routeId === r.routeId; }); });
+    S.routes = list.map(function (r) { r.local = false; return r; }).concat(drafts);
+    if (!routeById(S.routeId)) S.routeId = S.routes.length ? S.routes[0].routeId : '';
+    render();
+  }
+
+  function routesReset() {
+    S.routes = []; S.routeId = ''; pending = []; lastIds = ''; creating = false;
+    if (ctl) { try { ctl.destroy(); } catch (e) { /* already gone */ } ctl = null; }
+     var working = false, retries = 0, creating = false, deleteArmed = false, deleteTimer = null;
+  }
+
+  // ---------------------------------------------------------------- the save queue
+  function enqueue(routeId, fn) {
+       sugg = null;
+       pending.push({ routeId: routeId, fn: fn });
+    render();
+    pump();
+  }
+
+  function pump() {
+    if (working || !pending.length) return;
+    working = true;
+    var job = pending[0], route = routeById(job.routeId);
+    var stops = route ? job.fn(clone(route.stops)) : null;
+    if (!route || !stops) { pending.shift(); working = false; render(); pump(); return; }
+    var payload = { tripId: S.trip.tripId, routeId: route.routeId, routeName: route.routeName,
+      baseUpdatedAt: route.updatedAt || '', stops: stops };
+    App.api('saveRouteStops', payload).then(function (res) {
+      settle(job.routeId, res.route);
+      if (res.ok) { pending.shift(); retries = 0; return; }
+      if (!res.route) {                                               // deleted on another phone
+        pending = pending.filter(function (p) { return p.routeId !== job.routeId; });
+        retries = 0;
+        App.toast('That route was deleted on another phone.', true);
+        return;
+      }
+      if (++retries > 3) {                                            // otherwise: same change, latest version, try again
+        pending.shift(); retries = 0;
+        App.toast('Someone else keeps changing this route. Please try again.', true);
+      }
+    }).catch(function (e) {
+      pending.shift(); retries = 0;
+      App.toast(e.message, true);
+    }).then(function () {
+      working = false;
+      if (!pending.length) S.routeStamp = '';                         // pick up anything else from the next poll
+      render();
+      pump();
+    });
+  }
+
+  // ---------------------------------------------------------------- changes (each works on a list of stops)
+  function find(stops, placeId) {
+    for (var i = 0; i < stops.length; i++) if (stops[i].placeId === placeId) return i;
+    return -1;
+  }
+  function addStop(routeId, placeId) {
+    enqueue(routeId, function (stops) {
+      if (find(stops, placeId) >= 0) return null;
+      stops.push({ placeId: placeId, plannedArrival: '', stopNote: '', visited: false });
+      return stops;
+    });
+  }
+  function setVisited(routeId, placeId, value) {
+    enqueue(routeId, function (stops) {
+      var i = find(stops, placeId);
+      if (i < 0 || stops[i].visited === value) return null;
+      stops[i].visited = value;
+      return stops;
+    });
+  }
+  function move(routeId, placeId, dir) {
+    enqueue(routeId, function (stops) {
+      var i = find(stops, placeId), j = i + dir;
+      if (i < 0 || j < 0 || j >= stops.length) return null;
+      var t = stops[i]; stops[i] = stops[j]; stops[j] = t;
+      return stops;
+    });
+  }
+  function removeStop(routeId, placeId) {
+    enqueue(routeId, function (stops) {
+      var i = find(stops, placeId);
+      if (i < 0) return null;
+      stops.splice(i, 1);
+      return stops;
+    });
+  }
+
+  /** Called from the place card. Creates a route if there is none. */
+  function addToRoute(p) {
+    var r = active() || makeDraft(defaultName());
+    addStop(r.routeId, p.placeId);
+    App.toast('Added to ' + r.routeName + ' as stop ' + viewStops(r).length);
+    App.renderCard();
+  }
+
+  function routeButton(p) {
+    var r = active();
+    var i = r ? find(viewStops(r), p.placeId) : -1;
+    if (i >= 0) return h('button', { type: 'button', class: 'btn secondary', 'aria-disabled': 'true', text: 'In route (stop ' + (i + 1) + ')' });
+    return h('button', { type: 'button', class: 'btn secondary', text: 'Add to route', onclick: function () { addToRoute(p); } });
+  }
+
+  // ---------------------------------------------------------------- estimates, rhythm, hand-off
+   function fmtMin(min, exact) {
+   var r = Math.max(1, Math.round(min));
+   return (exact ? '' : '~') + (r >= 60 ? Math.floor(r / 60) + ' h ' + (r % 60) + ' min' : r + ' min');
+ }
+ function fmtDist(m, exact) { return (exact ? '' : '~') + (m >= 1000 ? (m / 1000).toFixed(1) + ' km' : (Math.round(m / 10) * 10) + ' m'); }
+
+ /** Straight line x DetourFactor (spec 5.5). Always an estimate. */
+ function estLeg(a, b) {
+   var set = S.settings || {};
+   var m = App.haversineM(a, b) * (Number(set.detourFactor) || 1.3);
+   return { m: m, min: m / (Number(set.walkMetersPerMinute) || 80) };
+ }
+ /** The exact walking time if "Get exact times" fetched it, otherwise the estimate. Null if a stop has no pin. */
+ function leg(a, b) {
+   if (!hasPin(a) || !hasPin(b)) return null;
+   var ex = EX[exKey(a, b)];
+   if (ex) return { m: ex.m, min: ex.min, exact: true };
+   return estLeg(a, b);
+ }
+
+  /** Runs of RUN or more drink stops in a row. Anything that is not a drink stop breaks the run. */
+  function rhythm(stops) {
+    var out = [], start = -1;
+    function close(end) { if (start >= 0 && end - start + 1 >= RUN) out.push({ from: start + 1, to: end + 1, n: end - start + 1 }); start = -1; }
+    stops.forEach(function (s, i) {
+      var p = placeOf(s);
+      if (p && DRINK[p.category]) { if (start < 0) start = i; } else close(i - 1);
+    });
+    close(stops.length - 1);
+    return out;
+  }
+
+  function ll(p) { return p.lat + ',' + p.lng; }
+
+  /**
+   * Legs for Google Maps over the stops not yet visited (and with a pin). Leg 1 starts from your location;
+   * each later leg starts at the previous leg's destination. A leg holds up to MaxWaypoints waypoints plus
+   * a destination (spec section 7, confirmed in spike S4).
+   */
+  function mapsLegs(stops) {
+    var pts = [];
+    stops.forEach(function (s, i) {
+      var p = placeOf(s);
+      if (!s.visited && hasPin(p)) pts.push({ lat: p.lat, lng: p.lng, no: i + 1 });
+    });
+    var max = Number(S.settings && S.settings.maxWaypoints) || 9;
+    var legs = [], i = 0, prev = null;
+    while (i < pts.length) {
+      var chunk = pts.slice(i, i + max + 1);
+      var dest = chunk[chunk.length - 1];
+      legs.push({ origin: prev, wps: chunk.slice(0, -1), dest: dest, from: chunk[0].no, to: dest.no });
+      prev = dest;
+      i += chunk.length;
+    }
+    return legs;
+  }
+  function mapsUrl(l) {
+    var u = 'https://www.google.com/maps/dir/?api=1';
+    if (l.origin) u += '&origin=' + ll(l.origin);
+    u += '&destination=' + ll(l.dest);
+    if (l.wps.length) u += '&waypoints=' + l.wps.map(ll).join('|');
+    return u + '&travelmode=walking';
+  }
+ // ---------------------------------------------------------------- exact times and order suggestion (Phase 7)
+ function getExact() {
+   var r = active();
+   if (!r || exactBusy) return;
+   var stops = viewStops(r), legs = [], seen = {};
+   for (var i = 0; i < stops.length - 1; i++) {
+     var a = placeOf(stops[i]), b = placeOf(stops[i + 1]);
+     if (!hasPin(a) || !hasPin(b)) continue;
+     var k = exKey(a, b);
+     if (EX[k] || seen[k]) continue;
+     seen[k] = true;
+     legs.push({ key: k, from: { lat: a.lat, lng: a.lng }, to: { lat: b.lat, lng: b.lng } });
+   }
+   if (!legs.length) { exactMsg = 'Every leg with pins already has an exact time.'; render(); return; }
+   var more = legs.length > 25;
+   legs = legs.slice(0, 25);
+   exactBusy = true; exactMsg = ''; render();
+   App.api('getExactWalkingTimes', S.trip.tripId, legs.map(function (l) { return { from: l.from, to: l.to }; })).then(function (res) {
+     var got = 0;
+     res.results.forEach(function (x, i) { if (x) { EX[legs[i].key] = x; got++; } });
+     exactMsg = got + ' of ' + legs.length + ' legs now have an exact time.' +
+       (res.quotaHit ? ' The free daily limit was reached, so the rest stay as ~ estimates.' : (got < legs.length ? ' Google could not find the others, so they stay as ~ estimates.' : '')) +
+       (more && !res.quotaHit ? ' Tap again for the remaining legs.' : '');
+   }).catch(function (e) { exactMsg = e.message; }).then(function () { exactBusy = false; render(); });
+ }
+
+ /**
+  * Suggests a shorter order for the stops not yet visited: nearest neighbour, then 2-opt tidying, using straight-line
+  * distances. Visited stops stay where they are. The start is the last visited stop, else your location, else the
+  * current first stop. Stops with no pin go last. Nothing changes until Apply.
+  */
+ function suggest() {
+   var r = active();
+   if (!r) return;
+   var stops = viewStops(r), done = [], todo = [], pin = [], nopin = [];
+   stops.forEach(function (s) { (s.visited ? done : todo).push(s); });
+   todo.forEach(function (s) {
+     var p = placeOf(s);
+     if (hasPin(p)) pin.push({ s: s, lat: p.lat, lng: p.lng }); else nopin.push(s);
+   });
+   var lastDone = done.length ? placeOf(done[done.length - 1]) : null;
+   var start = hasPin(lastDone) ? { lat: lastDone.lat, lng: lastDone.lng } : (S.pos ? { lat: S.pos.lat, lng: S.pos.lng } : null);
+   function none(text) { sugg = { routeId: r.routeId, none: true, text: text }; render(); }
+   if (pin.length < (start ? 2 : 3)) { none('There are too few unvisited stops with pins to reorder.'); return; }
+
+   var path = start ? [start] : [pin[0]];
+   var rest = pin.slice(start ? 0 : 1);
+   while (rest.length) {
+     var cur = path[path.length - 1], bi = 0, bd = Infinity;
+     for (var k = 0; k < rest.length; k++) { var d = App.haversineM(cur, rest[k]); if (d < bd) { bd = d; bi = k; } }
+     path.push(rest.splice(bi, 1)[0]);
+   }
+   var improved = true, guard = 0;
+   while (improved && guard++ < 50) {                       // 2-opt: reverse a stretch when that shortens the path
+     improved = false;
+     for (var i = 1; i < path.length - 1; i++) {
+       for (var j = i + 1; j < path.length; j++) {
+         var tail = j < path.length - 1;
+         var before = App.haversineM(path[i - 1], path[i]) + (tail ? App.haversineM(path[j], path[j + 1]) : 0);
+         var after = App.haversineM(path[i - 1], path[j]) + (tail ? App.haversineM(path[i], path[j + 1]) : 0);
+         if (after < before - 1) {
+           path = path.slice(0, i).concat(path.slice(i, j + 1).reverse(), path.slice(j + 1));
+           improved = true;
+         }
+       }
+     }
+   }
+   var ordered = path.filter(function (q) { return q.s; });
+   function metres(list) { var m = 0, prev = start; list.forEach(function (q) { if (prev) m += App.haversineM(prev, q); prev = q; }); return m; }
+   var set = S.settings || {};
+   var f = (Number(set.detourFactor) || 1.3) / (Number(set.walkMetersPerMinute) || 80);
+   var oldMin = metres(pin) * f, newMin = metres(ordered) * f;
+   var same = ordered.every(function (q, i) { return q.s.placeId === pin[i].s.placeId; });
+   if (same || oldMin - newMin < 1) { none('Your order is already about as short as it gets.'); return; }
+
+   var full = done.concat(ordered.map(function (q) { return q.s; }), nopin);
+   sugg = { routeId: r.routeId, ids: full.map(function (s) { return s.placeId; }), saved: oldMin - newMin, oldMin: oldMin, newMin: newMin,
+     names: full.slice(done.length).map(function (s, i) { var p = placeOf(s); return (done.length + i + 1) + '. ' + (p ? p.name : 'Unknown place'); }) };
+   render();
+ }
+
+ function applySugg() {
+   var g = sugg;
+   if (!g || g.none) return;
+   sugg = null;
+   enqueue(g.routeId, function (stops) {            // applied to the latest stops, so a stop added meanwhile is kept
+     var by = {}, out = [];
+     stops.forEach(function (s) { by[s.placeId] = s; });
+     g.ids.forEach(function (id) { if (by[id]) { out.push(by[id]); delete by[id]; } });
+     stops.forEach(function (s) { if (by[s.placeId]) out.push(s); });
+     return out;
+   });
+   App.toast('Order changed');
+ }
+
+ function suggBlock() {
+   var g = sugg;
+   var close = h('button', { type: 'button', class: 'btn secondary', text: g.none ? 'OK' : 'Not now', onclick: function () { sugg = null; render(); } });
+   if (g.none) return h('div', { class: 'cardbox', style: 'margin:8px 0', role: 'status' }, [h('p', { text: g.text }), close]);
+   return h('div', { class: 'cardbox', style: 'margin:8px 0', role: 'status' }, [
+     h('h2', { text: 'Suggested order' }),
+     h('p', { text: 'Saves about ' + fmtMin(g.saved) + ' of walking (' + fmtMin(g.oldMin) + ' now, ' + fmtMin(g.newMin) + ' after). Visited stops stay put.' }),
+     h('p', { class: 'muted', text: 'A rough straight-line guess. It ignores opening hours, food breaks and hills, so check the rhythm warning after applying.' }),
+     h('ul', { class: 'activity' }, g.names.map(function (n) { return h('li', { text: n }); })),
+     h('div', { class: 'btn-row' }, [h('button', { type: 'button', class: 'btn', text: 'Apply this order', onclick: applySugg }), close])
+   ]);
+ }
+
+ function toolsBlock(r, stops) {
+   var left = stops.filter(function (s) { return !s.visited; }).length;
+   var kids = [h('div', { class: 'btn-row' }, [
+     h('button', { type: 'button', class: 'btn secondary', id: 'route-exact', disabled: exactBusy, text: exactBusy ? 'Getting times...' : 'Get exact times', onclick: getExact }),
+     h('button', { type: 'button', class: 'btn secondary', id: 'route-suggest', disabled: left < 2, text: 'Suggest order', onclick: suggest })
+   ])];
+   if (exactMsg) kids.push(h('p', { class: 'muted', role: 'status', text: exactMsg }));
+   if (sugg && sugg.routeId === r.routeId) kids.push(suggBlock());
+   return h('div', { class: 'pad', style: 'padding-top:0' }, kids);
+ }
+  // ---------------------------------------------------------------- drawing
+  function renderTop() {
+    var box = $('route-top');
+    clear(box);
+    if (creating) {
+      var name = h('input', { type: 'text', id: 'route-new-name', maxlength: '60', autocomplete: 'off', placeholder: 'Name, e.g. Friday crawl', 'aria-label': 'Name for the new route' });
+      function create() {
+        creating = false;
+        makeDraft(name.value.trim() || defaultName());
+        render();
+      }
+      name.addEventListener('keydown', function (e) { if (e.key === 'Enter') create(); });
+      box.appendChild(name);
+      box.appendChild(h('button', { type: 'button', class: 'btn', text: 'Create', onclick: create }));
+      box.appendChild(h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: function () { creating = false; render(); } }));
+      return;
+    }
+    if (S.routes.length) {
+      var sel = h('select', { id: 'route-select', 'aria-label': 'Choose a route' }, S.routes.map(function (r) {
+        return h('option', { value: r.routeId, text: r.routeName + ' (' + viewStops(r).length + ')' });
+      }));
+      sel.value = S.routeId;
+      sel.addEventListener('change', function () { S.routeId = sel.value; lastIds = ''; deleteArmed = false; render(); });
+      box.appendChild(sel);
+    }
+    box.appendChild(h('button', { type: 'button', class: 'btn secondary', text: 'New route', onclick: function () { creating = true; render(); var i = $('route-new-name'); if (i) i.focus(); } }));
+  }
+
+  function stopItem(r, s, i, stops, nextIdx) {
+    var p = placeOf(s);
+    var isNext = i === nextIdx;
+    var sub = p ? [p.category === 'Anchor' ? 'Anchor' : App.CAT_LABEL[p.category], p.area].filter(Boolean).join(' \u00b7 ') : '';
+    var id = s.placeId;
+    return h('div', { class: 'stop' + (isNext ? ' next' : '') + (s.visited ? ' done' : ''), 'data-place': id }, [
+      h('div', { class: 'stop-head' }, [
+        h('div', { class: 'stop-num', text: s.visited ? '\u2713' : String(i + 1) }),
+        h('div', { class: 'grow' }, [
+          h('div', { class: 'stop-name', text: p ? p.name : 'Unknown place' }),
+          sub ? h('div', { class: 'muted', text: sub }) : null,
+          s.visited ? h('div', { class: 'muted', text: 'Visited' }) : null,
+          isNext ? h('div', { class: 'next-flag', text: 'Next stop' }) : null,
+          !hasPin(p) ? h('div', { class: 'warnline', text: 'No pin yet: not on the map and left out of the Google Maps route.' }) : null
+        ])
+      ]),
+      h('div', { class: 'stop-actions' }, [
+        h('button', { type: 'button', class: 'btn' + (s.visited ? ' secondary' : ''), 'aria-pressed': String(!!s.visited),
+          text: s.visited ? 'Visited (undo)' : 'Mark visited', onclick: function () { setVisited(r.routeId, id, !s.visited); } }),
+        h('button', { type: 'button', class: 'btn secondary icon', 'aria-label': 'Move up', text: '\u2191', disabled: i === 0, onclick: function () { move(r.routeId, id, -1); } }),
+        h('button', { type: 'button', class: 'btn secondary icon', 'aria-label': 'Move down', text: '\u2193', disabled: i === stops.length - 1, onclick: function () { move(r.routeId, id, 1); } }),
+        h('button', { type: 'button', class: 'btn secondary', 'aria-label': 'Remove from route', text: 'Remove', onclick: function () { removeStop(r.routeId, id); } })
+      ])
+    ]);
+  }
+
+  function onDelete(ev) {
+    var r = active();
+    if (!r) return;
+    var btn = ev.currentTarget;
+    if (!deleteArmed) {
+      deleteArmed = true;
+      btn.textContent = 'Tap again to delete this route';
+      clearTimeout(deleteTimer);
+      deleteTimer = setTimeout(function () { deleteArmed = false; if (btn.isConnected) btn.textContent = 'Delete route'; }, 4000);
+      return;
+    }
+    clearTimeout(deleteTimer);
+    deleteArmed = false;
+    if (r.local && !pending.length) { settle(r.routeId, null); render(); return; }   // never saved: just forget it
+    enqueue(r.routeId, function () { return []; });
+  }
+
+  function renderBody() {
+    var box = $('route-body');
+    clear(box);
+    var r = active();
+    if (!r) {
+      box.appendChild(h('div', { class: 'empty' }, [
+        h('p', { text: 'No route yet.' }),
+        h('p', { class: 'muted', text: 'Open a place on the Map or List and tap Add to route, or start a route with New route.' })
+      ]));
+      return;
+    }
+    var stops = viewStops(r);
+    if (!stops.length) {
+      box.appendChild(h('div', { class: 'empty' }, [
+        h('p', { text: r.routeName + ' has no stops yet.' }),
+        h('p', { class: 'muted', text: 'Open a place on the Map or List and tap Add to route.' }),
+        r.local ? h('button', { type: 'button', class: 'btn secondary', text: 'Discard this route', onclick: function () { settle(r.routeId, null); render(); } }) : null
+      ]));
+      return;
+    }
+
+    var nextIdx = -1;
+    stops.forEach(function (s, i) { if (nextIdx < 0 && !s.visited) nextIdx = i; });
+
+    // rhythm warnings: text and a symbol, never colour alone
+    rhythm(stops).forEach(function (w) {
+      box.appendChild(h('p', { class: 'warnline rhythm', role: 'status',
+        text: '\u26a0 Stops ' + w.from + ' to ' + w.to + ': ' + w.n + ' drink stops in a row with no food or break. Maybe add a food stop?' }));
+    });
+
+      // walking estimates: exact where fetched, "~" otherwise
+   var legs = [], total = 0, left = 0, unknown = false, dist = 0, allExact = true;
+   for (var i = 0; i < stops.length - 1; i++) {
+     var l = leg(placeOf(stops[i]), placeOf(stops[i + 1]));
+     legs.push(l);
+     if (!l) { unknown = true; continue; }
+     if (!l.exact) allExact = false;
+     total += l.min; dist += l.m;
+     if (nextIdx >= 0 && i >= nextIdx) left += l.min;
+   }
+   var ex = allExact && !unknown;
+   var line = stops.length < 2 ? 'Add a second stop to see walking times.'
+     : 'Walking between stops: ' + fmtMin(total, ex) + ', ' + fmtDist(dist, ex) + ' in total' + (nextIdx > 0 ? ' (' + fmtMin(left, ex) + ' still to go)' : '') +
+       (unknown ? '. Some legs are unknown because a stop has no pin.' : '.');
+   box.appendChild(h('p', { class: 'muted pad route-total', text: line }));
+   if (stops.length >= 2) box.appendChild(toolsBlock(r, stops));
+
+    stops.forEach(function (s, i) {
+      box.appendChild(stopItem(r, s, i, stops, nextIdx));
+      if (i < stops.length - 1) {
+        var lg = legs[i];
+        box.appendChild(h('div', { class: 'leg', text: lg ? '\u2193 ' + fmtMin(lg.min) + ' \u00b7 ' + fmtDist(lg.m) + ' walk' : '\u2193 walk time unknown (a stop has no pin)' }));
+      }
+    });
+
+    // Google Maps hand-off
+    var ml = mapsLegs(stops);
+    var hand = h('div', { class: 'card-block pad' });
+    if (nextIdx < 0) {
+      hand.appendChild(h('p', { class: 'muted', text: 'Every stop is visited.' }));
+    } else if (!ml.length) {
+      hand.appendChild(h('p', { class: 'muted', text: 'None of the remaining stops has a pin, so there is nothing to open in Google Maps yet.' }));
+    } else {
+      hand.appendChild(h('div', { class: 'btn-row' }, ml.map(function (l) {
+        return h('a', { class: 'btn', href: mapsUrl(l), target: '_blank', rel: 'noopener',
+          text: ml.length === 1 ? 'Open in Google Maps' : 'Leg ' + (ml.indexOf(l) + 1) + ': stops ' + l.from + (l.to !== l.from ? ' to ' + l.to : '') });
+      })));
+      hand.appendChild(h('p', { class: 'muted', text: 'Walking directions through the stops not yet visited, starting from where you are.' +
+        (ml.length > 1 ? ' Google Maps takes about ' + ((Number(S.settings && S.settings.maxWaypoints) || 9) + 1) + ' stops at a time, so this is split into ' + ml.length + ' legs. Do them in order.' : '') }));
+    }
+    box.appendChild(hand);
+    box.appendChild(h('div', { class: 'pad' }, [h('button', { type: 'button', class: 'btn secondary', id: 'route-delete', text: 'Delete route', onclick: onDelete })]));
+  }
+
+  function renderMap() {
+    if (!ctl) return;
+    var r = active();
+    var stops = r ? viewStops(r) : [];
+    var nextIdx = -1;
+    stops.forEach(function (s, i) { if (nextIdx < 0 && !s.visited) nextIdx = i; });
+    var pins = [], pts = [];
+    stops.forEach(function (s, i) {
+      var p = placeOf(s);
+      if (!hasPin(p)) return;
+      pts.push([p.lat, p.lng]);
+      pins.push({ id: s.placeId, lat: p.lat, lng: p.lng, text: String(i + 1), tone: s.visited ? 'routedone' : (i === nextIdx ? 'routenext' : 'route'), title: p.name });
+    });
+    ctl.setPins(pins, function (id) { App.openCard(id); });
+    ctl.setRoute(pts);
+    var key = (r ? r.routeId : '') + ':' + pins.map(function (p) { return p.id; }).join(',');
+    if (key !== lastIds) { ctl.fit(); lastIds = key; }
+  }
+
+  function render() {
+    if (S.screen !== 'route' || !S.trip) return;
+    renderTop();
+    renderBody();
+    renderMap();
+  }
+
+  function show() {
+    if (!ctl) {
+      try { ctl = RTMap.create('route-map', { center: App.tripCentre(), zoom: 14 }); }
+      catch (e) { App.fail(e); }
+      if (ctl && S.pos) ctl.setMe(S.pos.lat, S.pos.lng, S.pos.acc);
+      lastIds = '';
+    }
+    if (ctl) ctl.invalidate();
+    render();
+  }
+
+  App.routesLoad = routesLoad; App.routesReset = routesReset;
+  App.routeButton = routeButton; App.routeRender = render; App.routeShow = show;
+})();
+</script>

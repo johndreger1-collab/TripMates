@@ -46,7 +46,7 @@ Build:
 - If the owner provides the Level UP source folder, read it, record every
   convention adopted from it in `docs/DECISIONS.md`, and adjust CLAUDE.md
   commands and ARCHITECTURE §3 to match. If not, keep the defaults.
-- Re-check every item in STATUS.md "Defects and gaps" against the live code and
+- Re-check every item in STATUS.md "Defects found in the live scripts" against the live code and
   correct STATUS.md.
 - Fix only the trivial, no-behaviour-change items if the owner agrees (STATUS
   defects 2-5 and 10). `clasp push`, run all `runPhase*Tests` in the

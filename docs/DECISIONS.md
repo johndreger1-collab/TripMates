@@ -81,3 +81,28 @@ needed. Built in R12, after cutover, so it cannot put the March trip at risk.
 
 *Add entries below as Phase R0 records Level UP's conventions (language, folder
 layout, lint, tests, service worker, deploy).*
+
+**D19. R0 tooling: clasp 3, plain JavaScript, `.js` files, docs' default layout**
+(Nov 2026). Level UP's source was not available, so the defaults in
+ARCHITECTURE.md stand (D15). `clasp` 3.4.1, run with `npx @google/clasp`, no
+global install. clasp 3 saves server files as `.js`; the Apps Script editor
+still shows them as `.gs`, so `Data.gs` in the docs is `apps-script/Data.js`
+on disk. Server code stays plain JavaScript (V8), not TypeScript. The live
+project's manifest is unchanged (`executeAs: USER_ACCESSING`) until R2.
+*Why:* clasp's default extension needs no config, and a byte-for-byte baseline
+keeps the first diff honest.
+
+**D20. Route "Suggest order" already exists** (found in R0). Phase 7 built a
+nearest-neighbour + 2-opt reorder in `Route.html` (straight-line distances,
+visited stops stay put, nothing changes until Apply). R11's "route
+auto-optimisation" therefore means porting it, not designing it.
+
+**D21. Edit trip is added to the old app now, not left for R8** (owner, 11 Nov
+2026). The owner wants to set the fixture and kickoff on the existing trip
+before March. `updateTrip_` (owner only, script lock, only the fields sent are
+changed, blank clears an optional field) changes City, StartDate, EndDate,
+Fixture and KickoffISO. Venue and lodging stay with Anchor places, as now.
+The kickoff is entered in the phone's own time zone and stored as UTC ISO.
+`tripStamp_` now includes those five fields and `getSync` returns `trip` when
+the stamp changes, so the other phones see an edit within one poll. R8 ports
+the same rules to the API action `updateTrip`.
