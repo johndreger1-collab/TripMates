@@ -1,0 +1,284 @@
+<script>
+/**
+ * AddPlace.html: the add-place flow. Three ways to find the spot (search, tap the
+ * map, paste a link), then one form. Shares helpers with Client.html via App.
+ *
+ * Coordinates are always confirmed by the person: they see the pin and can drag it.
+ *   Search  -> CoordSource Geocoded (Manual if the pin is moved)
+ *   Tap map -> Manual
+ *   Link    -> Link (Manual if the pin is moved)
+ */
+(function () {
+  'use strict';
+  var h = App.h, $ = App.$, clear = App.clear;
+  var KINDS = ['Lodging', 'Stadium', 'Station', 'Other'];
+  var METHODS = [['search', 'Search'], ['tap', 'Tap map'], ['link', 'Paste link']];
+
+  var A = null;   // state of the open flow, or null when closed
+  var R = {};     // references to the live form elements
+
+  function setMsg(text, isError) {
+    if (!R.msg) return;
+    R.msg.textContent = text || '';
+    R.msg.className = 'add-msg' + (isError ? ' err' : '');
+  }
+
+  // ---------------------------------------------------------------- open / close
+  function open(preset) {
+    var S = App.S;
+    if (!S.trip) return;
+    preset = preset || {};
+    A = {
+      method: 'search', lat: null, lng: null, source: '', moved: false, linkUrl: '', address: '',
+      desire: null, local: {}, match: {}, ctl: null, saving: false, preset: preset, from: S.screen
+    };
+    var root = $('add');
+    clear(root);
+    root.hidden = false;
+    document.body.classList.add('noscroll');
+    build(root);
+    setMethod('search');   // always draw the Search box first, even if the map below fails to start
+
+    try {
+      A.ctl = RTMap.create('add-map', { center: App.tripCentre(), zoom: 14 });
+    } catch (e) {
+      A.ctl = null;
+      setMsg('The map could not start (' + (e && e.message ? e.message : e) + '). Close this screen and try again.', true);
+      return;
+    }
+    // Show existing places as faint, non-clickable pins so duplicates are easy to spot.
+    var pins = S.places.filter(function (p) { return p.lat !== null && p.lng !== null; }).map(function (p) {
+      return { id: p.placeId, lat: p.lat, lng: p.lng, text: '', tone: p.category === 'Anchor' ? 'anchor' : 'unrated', title: p.name };
+    });
+    A.ctl.setPins(pins, null, { passive: true });
+    if (S.pos) A.ctl.setMe(S.pos.lat, S.pos.lng, S.pos.acc);
+    A.ctl.onTap(function (lat, lng) {
+      setPin(lat, lng, 'Manual');
+      setMsg('Pin placed. Drag it or tap the map again to adjust, then fill in the details.');
+    });
+  }
+
+  function close() {
+    if (A && A.ctl) { try { A.ctl.destroy(); } catch (e) { /* already gone */ } }
+    A = null; R = {};
+    var root = $('add');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
+  // ---------------------------------------------------------------- building the screen
+  function build(root) {
+    var S = App.S;
+    var title = A.preset.anchorKind ? 'Add ' + ({ Lodging: 'lodging', Stadium: 'the ground', Station: 'a station', Other: 'a reference point' }[A.preset.anchorKind]) : 'Add a place';
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { text: title }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: close })
+    ]));
+
+    R.seg = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'How to find the place' },
+      METHODS.map(function (m) {
+        return h('button', { type: 'button', role: 'tab', 'data-m': m[0], text: m[1], onclick: function () { setMethod(m[0]); } });
+      }));
+    R.panel = h('div', { class: 'add-panel' });
+    R.msg = h('p', { class: 'add-msg', role: 'status', 'aria-live': 'polite' });
+    root.appendChild(R.seg);
+    root.appendChild(R.panel);
+    root.appendChild(R.msg);
+    root.appendChild(h('div', { id: 'add-map', class: 'add-map' }));
+
+    // ----- details form
+    R.name = h('input', { type: 'text', id: 'add-name', maxlength: '120', autocomplete: 'off' });
+    R.cat = h('select', { id: 'add-cat' }, [h('option', { value: '', text: 'Choose a type...' })].concat(
+      App.CATS.map(function (c) { return h('option', { value: c[0], text: App.CAT_LABEL[c[0]] }); })));
+    R.kind = h('select', { id: 'add-kind' }, KINDS.map(function (k) { return h('option', { value: k, text: k }); }));
+    R.kindField = h('div', { class: 'field', hidden: true }, [h('label', { for: 'add-kind', text: 'What kind of reference point?' }), R.kind]);
+    R.city = h('input', { type: 'text', id: 'add-city', list: 'add-cities', maxlength: '80', autocomplete: 'off' });
+    var dl = h('datalist', { id: 'add-cities' }, App.cities().map(function (c) { return h('option', { value: c }); }));
+    R.area = h('input', { type: 'text', id: 'add-area', maxlength: '80', autocomplete: 'off', placeholder: 'e.g. Old Town' });
+    R.hours = h('input', { type: 'text', id: 'add-hours', maxlength: '300', autocomplete: 'off', placeholder: 'e.g. Kitchen closes at 8' });
+    R.notes = h('textarea', { id: 'add-notes', maxlength: '2000' });
+
+    R.city.value = S.city || S.trip.city;
+    if (A.preset.category) R.cat.value = A.preset.category;
+    if (A.preset.anchorKind) R.kind.value = A.preset.anchorKind;
+
+    R.desireField = h('div', { class: 'field' }, [
+      h('div', { class: 'label', text: 'How keen are you to try it? (optional, 1 to 4)' }),
+      App.numPick(null, function (n) { A.desire = n; }),
+      h('p', { class: 'muted', text: '4 means you really want to go. Tap the number again to clear it.' })
+    ]);
+
+    function tagGroup(label, list, bag) {
+      var box = h('div', { class: 'tagchips' });
+      list.forEach(function (t) {
+        box.appendChild(h('button', { type: 'button', class: 'fchip', 'aria-pressed': 'false', text: t.replace(/_/g, ' '),
+          onclick: function (ev) { bag[t] = !bag[t]; ev.currentTarget.setAttribute('aria-pressed', String(!!bag[t])); } }));
+      });
+      return h('div', { class: 'field' }, [h('div', { class: 'label', text: label }), box]);
+    }
+
+    R.cat.addEventListener('change', syncCategory);
+
+    root.appendChild(h('div', { class: 'add-form' }, [
+      dl,
+      h('div', { class: 'field' }, [h('label', { for: 'add-name', text: 'Name' }), R.name]),
+      h('div', { class: 'field' }, [h('label', { for: 'add-cat', text: 'Type' }), R.cat]),
+      R.kindField,
+      h('div', { class: 'field' }, [h('label', { for: 'add-city', text: 'City' }), R.city]),
+      h('div', { class: 'field' }, [h('label', { for: 'add-area', text: 'Area (optional)' }), R.area]),
+      R.desireField,
+      tagGroup('Local tags (optional)', S.settings.localTags, A.local),
+      tagGroup('Match-day tags (optional)', S.settings.matchDayTags, A.match),
+      h('div', { class: 'field' }, [h('label', { for: 'add-hours', text: 'Hours note (optional)' }), R.hours]),
+      h('div', { class: 'field' }, [h('label', { for: 'add-notes', text: 'Notes (optional)' }), R.notes]),
+      h('div', { class: 'sticky-save' }, [
+        h('button', { type: 'button', class: 'btn big', id: 'add-save', text: 'Save place', onclick: save })
+      ])
+    ]));
+    R.save = $('add-save');
+    syncCategory();
+  }
+
+  /** Reference points have a kind and are never rated, so no desire-to-try for them. */
+  function syncCategory() {
+    var isAnchor = R.cat.value === 'Anchor';
+    R.kindField.hidden = !isAnchor;
+    R.desireField.hidden = isAnchor;
+  }
+
+  // ---------------------------------------------------------------- the three methods
+  function setMethod(id) {
+    A.method = id;
+    Array.prototype.forEach.call(R.seg.querySelectorAll('button'), function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.m === id));
+    });
+    clear(R.panel);
+
+    if (id === 'search') {
+      var q = h('input', { type: 'text', id: 'add-q', maxlength: '200', autocomplete: 'off', placeholder: "e.g. Sandy Bell's, Old Town" });
+      q.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSearch(); });
+      R.panel.appendChild(h('div', { class: 'field' }, [
+        h('label', { for: 'add-q', text: 'Name or address' }), q,
+        h('p', { class: 'muted', text: 'The city below is added to your search automatically.' })
+      ]));
+      R.panel.appendChild(h('button', { type: 'button', class: 'btn', text: 'Find on map', onclick: doSearch }));
+      q.focus();
+    } else if (id === 'tap') {
+      R.panel.appendChild(h('p', { text: 'Tap the map where the place is. You can drag the pin to adjust it.' }));
+    } else {
+      var u = h('input', { type: 'url', id: 'add-link', maxlength: '2000', autocomplete: 'off', placeholder: 'https://www.google.com/maps/...' });
+      u.addEventListener('keydown', function (e) { if (e.key === 'Enter') doLink(); });
+      R.panel.appendChild(h('div', { class: 'field' }, [
+        h('label', { for: 'add-link', text: 'Google Maps link' }), u,
+        h('p', { class: 'muted', text: 'Works best with a link copied from the address bar of Google Maps in a desktop browser. Share links from the phone app (maps.app.goo.gl) usually cannot be read, but I will keep them so View in Google Maps still works.' })
+      ]));
+      R.panel.appendChild(h('button', { type: 'button', class: 'btn', text: 'Read link', onclick: doLink }));
+    }
+  }
+
+  function setPin(lat, lng, source) {
+    A.lat = lat; A.lng = lng; A.source = source;
+    if (source !== 'Manual') A.moved = false;
+    A.ctl.setDraft(lat, lng, function (la, ln) {
+      A.lat = la; A.lng = ln; A.moved = true; A.source = 'Manual';
+      setMsg('Pin moved. Check it is on the right spot, then save.');
+    });
+  }
+
+  function noMap() {
+    if (A && A.ctl) return false;
+    setMsg('The map did not start, so a pin cannot be placed. Close this screen and try again.', true);
+    return true;
+  }
+
+  function doSearch() {
+    if (noMap()) return;
+    var input = $('add-q');
+    var q = input ? input.value.trim() : '';
+    if (!q) { setMsg('Type a name or address first.', true); return; }
+    var city = R.city.value.trim() || App.S.trip.city;
+    var query = q.toLowerCase().indexOf(city.toLowerCase()) >= 0 ? q : q + ', ' + city;
+    setMsg('Looking up...');
+    App.api('geocodePlace', query, App.nearPoint()).then(function (r) {
+      if (!A) return;
+      if (!r.ok) { setMsg(r.error, true); return; }
+      A.address = r.formatted;
+      setPin(r.lat, r.lng, 'Geocoded');
+      A.ctl.flyTo(r.lat, r.lng, 17);
+      if (!R.name.value.trim()) R.name.value = q.split(',')[0].trim();
+      setMsg(r.matchNote + ' ' + r.formatted + '. Drag the pin or tap the map to adjust it.');
+    }).catch(function (e) { setMsg(e.message, true); });
+  }
+
+  function doLink() {
+    if (noMap()) return;
+    var input = $('add-link');
+    var url = input ? input.value.trim() : '';
+    if (!url) { setMsg('Paste a Google Maps link first.', true); return; }
+    setMsg('Reading link...');
+    App.api('resolveMapsLink', url).then(function (r) {
+      if (!A) return;
+      if (r.ok) {
+        A.linkUrl = r.url || url;
+        A.address = '';
+        setPin(r.lat, r.lng, 'Link');
+        A.ctl.flyTo(r.lat, r.lng, 17);
+        if (!R.name.value.trim() && r.name) R.name.value = r.name;
+        setMsg('Read the location from the link (' + r.method + '). Drag the pin if it is off.');
+      } else {
+        if (r.needsFullLink) {
+          A.linkUrl = r.url || url;                // keep it so View in Google Maps works
+          if (r.nameHint && !R.name.value.trim()) R.name.value = r.nameHint;
+        }
+        setMsg(r.error, true);
+      }
+    }).catch(function (e) { setMsg(e.message, true); });
+  }
+
+  // ---------------------------------------------------------------- saving
+  function keys(bag) { return Object.keys(bag).filter(function (k) { return bag[k]; }); }
+
+  function save() {
+    if (!A || A.saving) return;
+    var name = R.name.value.trim();
+    var cat = R.cat.value;
+    if (A.lat === null) { setMsg('Place the pin first: use Search, tap the map, or paste a link.', true); window.scrollTo(0, 0); $('add').scrollTop = 0; return; }
+    if (!name) { setMsg('Give the place a name.', true); R.name.focus(); return; }
+    if (!cat) { setMsg('Choose a type for the place.', true); R.cat.focus(); return; }
+
+    var place = {
+      tripId: App.S.trip.tripId, name: name, category: cat, city: R.city.value.trim(), area: R.area.value.trim(),
+      address: A.source === 'Geocoded' ? A.address : '',
+      lat: App.round6(A.lat), lng: App.round6(A.lng),
+      coordSource: A.source || 'Manual', coordConfirmed: true,
+      googleMapsUrl: A.linkUrl, localTags: keys(A.local), matchDayTags: keys(A.match),
+      hoursNote: R.hours.value.trim(), notes: R.notes.value.trim()
+    };
+    if (cat === 'Anchor') place.anchorKind = R.kind.value;
+    else if (A.desire !== null) place.myDesire = A.desire;
+
+    A.saving = true;
+    R.save.disabled = true;
+    R.save.textContent = 'Saving...';
+    var from = A.from;
+    App.api('savePlace', place).then(function (np) {
+      App.upsertPlace(np);
+      close();
+      App.renderAll();
+      App.toast('Added ' + np.name);
+      if (from === 'trip') return;                 // adding lodging from the Trip tab: stay there
+      if (App.S.screen !== 'map') App.showScreen('map');
+      if (App.getMapCtl()) App.getMapCtl().flyTo(np.lat, np.lng, 16);
+      App.openCard(np.placeId);
+    }).catch(function (e) {
+      setMsg(e.message, true);
+      App.toast(e.message, true);
+      if (A) { A.saving = false; R.save.disabled = false; R.save.textContent = 'Save place'; }
+    });
+  }
+
+  App.openAdd = open;
+  App.closeAdd = close;
+})();
+</script>

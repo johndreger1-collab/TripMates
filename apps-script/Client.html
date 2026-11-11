@@ -1,0 +1,816 @@
+<script>
+/**
+ * Client.html: the app itself. State lives in one object (S); every screen is
+ * drawn from it. The add-place flow is in AddPlace.html and shares this file's
+ * helpers through the global App object.
+ */
+var App = {};
+(function () {
+  'use strict';
+
+  var CATS = [['Pub', 'Pub'], ['Restaurant', 'Restaurant'], ['Grab_and_Go', 'Grab & Go'], ['Cocktails', 'Cocktails'],
+              ['Whisky_Bar', 'Whisky bar'], ['Tasting', 'Tastings'], ['Sight', 'Sights'], ['Anchor', 'Anchors']];
+  var CAT_LABEL = { Pub: 'Pub', Restaurant: 'Restaurant', Grab_and_Go: 'Grab & Go', Cocktails: 'Cocktails',
+                    Whisky_Bar: 'Whisky bar', Tasting: 'Tasting', Sight: 'Sight', Anchor: 'Anchor' };
+  var KIND_LETTER = { Lodging: 'H', Stadium: 'G', Station: 'T', Other: 'A' };
+  var DEFAULT_CENTRE = [55.9533, -3.1883];
+
+  var S = {
+    trips: [], trip: null, members: [], settings: null, places: [], you: '', criteria: {}, ratings: {},
+    pos: null, filters: {}, city: '', sort: 'score', selectedId: null, screen: 'picker', busy: 0, view: 'both'
+  };
+  var mapCtl = null;
+  var mapFitted = false;
+  var beenArmed = false;
+  var beenTimer = null;
+
+  // ------------------------------------------------------------------ helpers
+  function $(id) { return document.getElementById(id); }
+
+  function h(tag, attrs, kids) {
+    var e = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'class') e.className = v;
+      else if (k === 'text') e.textContent = v;
+      else if (k.slice(0, 2) === 'on') e.addEventListener(k.slice(2), v);
+      else if (v === true) e.setAttribute(k, '');
+      else e.setAttribute(k, v);
+    });
+    (kids || []).forEach(function (c) {
+      if (c === null || c === undefined || c === false) return;
+      e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    });
+    return e;
+  }
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+
+  var toastTimer;
+  function toast(msg, isError) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (isError ? ' err' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = 'toast'; }, isError ? 6000 : 2500);
+  }
+  function fail(e) { toast(e && e.message ? e.message : String(e), true); }
+
+  function busy(n) { S.busy += n; $('busy').hidden = S.busy <= 0; }
+
+  /** Promise wrapper around google.script.run, with the loading bar. */
+  function api(name) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    busy(1);
+    return new Promise(function (resolve, reject) {
+      var r = google.script.run
+        .withSuccessHandler(function (v) { busy(-1); resolve(v); })
+        .withFailureHandler(function (e) { busy(-1); reject(new Error(e && e.message ? e.message : String(e))); });
+      r[name].apply(r, args);
+    });
+  }
+
+  function round6(n) { return Math.round(n * 1e6) / 1e6; }
+  function fmt1(n) { return String(Math.round(n * 10) / 10); }
+  function byId(id) { for (var i = 0; i < S.places.length; i++) if (S.places[i].placeId === id) return S.places[i]; return null; }
+  function tagLabel(t) { return String(t).replace(/_/g, ' '); }
+
+  function fmtDate(iso) {
+    if (!iso) return '';
+    var d = new Date(String(iso).slice(0, 10) + 'T12:00:00');
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  function fmtKickoff(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function tripDates(t) {
+    if (t.startDate && t.endDate) return fmtDate(t.startDate) + ' to ' + fmtDate(t.endDate);
+    return t.startDate ? 'From ' + fmtDate(t.startDate) : (t.endDate ? 'Until ' + fmtDate(t.endDate) : '');
+  }
+
+  function nameOf(email) {
+    if (email === S.you) return 'You';
+    for (var i = 0; i < S.members.length; i++) if (S.members[i].email === email) return S.members[i].displayName;
+    return String(email).split('@')[0];
+  }
+
+  // ------------------------------------------------------------ derived display
+  function desireMean(p) {
+    var vals = Object.keys(p.desireToTry || {}).map(function (k) { return Number(p.desireToTry[k]); }).filter(isFinite);
+    if (!vals.length) return null;
+    return vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
+  }
+
+ // ------------------------------------------------------------ Mine / Mate / Both (Phase 3)
+ function otherMembers() { return S.members.filter(function (m) { return m.email !== S.you; }); }
+
+ /** The score shown for a place under the current view. null means no score in this view. */
+ function viewScore(p) {
+   if (p.category === 'Anchor') return null;
+   var ps = p.personScores || {};
+   if (S.view === 'mine') return ps[S.you] === undefined ? null : ps[S.you];
+   if (S.view === 'others') {
+     var vals = Object.keys(ps).filter(function (e) { return e !== S.you; }).map(function (e) { return ps[e]; });
+     if (!vals.length) return null;
+     return Math.round((vals.reduce(function (a, b) { return a + b; }, 0) / vals.length) * 10) / 10;
+   }
+   return p.blendedScore === undefined ? null : p.blendedScore;
+ }
+ function othersLabel() { return otherMembers().length === 1 ? 'Mate\u2019s' : 'Others'; }
+ function bothLabel() { return S.members.length > 2 ? 'All' : 'Both'; }
+ function scoreWord() {
+   if (S.view === 'mine') return 'Your score';
+   if (S.view === 'others') return otherMembers().length === 1 ? 'Mate\u2019s score' : 'Average of the others';
+   return 'Blended score';
+ }
+ function noScoreText() {
+   if (S.view === 'mine') return 'No score from you yet';
+   if (S.view === 'others') return 'No score from ' + (otherMembers().length === 1 ? 'your mate' : 'the others') + ' yet';
+   return 'Not rated yet';
+ }
+
+ /** The "Scores: Mine | Matt | Both" bar under the filter chips. Hidden when you are the only member. */
+ /** One "Mine | Mate's | Both" button group. Used in the card too, because the card covers the bar under the chips. */
+ function viewSeg() {
+   var seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Whose scores to show' });
+   [['mine', 'Mine'], ['others', othersLabel()], ['both', bothLabel()]].forEach(function (o) {
+     seg.appendChild(h('button', { type: 'button', 'aria-pressed': String(S.view === o[0]), text: o[1],
+       onclick: function () { S.view = o[0]; renderViewBar(); renderMap(); renderList(); renderCard(); } }));
+   });
+   return seg;
+ }
+ function renderViewBar() {
+   var opts = [['mine', 'Mine'], ['others', othersLabel()], ['both', bothLabel()]];
+   ['view-map', 'view-list'].forEach(function (id) {
+     var box = $(id);
+     if (!box) return;
+     clear(box);
+     box.hidden = S.members.length < 2;
+     if (box.hidden) return;
+     var seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Whose scores to show' });
+     opts.forEach(function (o) {
+       seg.appendChild(h('button', { type: 'button', 'aria-pressed': String(S.view === o[0]), text: o[1],
+         onclick: function () { S.view = o[0]; renderViewBar(); renderMap(); renderList(); renderCard(); } }));
+     });
+     box.appendChild(h('span', { text: 'Scores:' }));
+     box.appendChild(seg);
+   });
+ }
+
+  function toneFor(p) {
+    if (p.category === 'Anchor') return 'anchor';
+   if (viewScore(p) === null) return 'unrated';
+var s = viewScore(p), c = S.settings;    return s < c.scoreRed ? 'red' : s < c.scoreAmber ? 'amber' : s < c.scoreLightGreen ? 'lgreen' : 'dgreen';
+  }
+
+  /** The number on a pin: the score, or for unrated places the average desire to try, or a dash. Never colour alone. */
+  function pinText(p) {
+    if (p.category === 'Anchor') return KIND_LETTER[p.anchorKind] || 'A';
+    if (viewScore(p) !== null) return String(Math.round(viewScore(p)));
+    var d = desireMean(p);
+    return d === null ? '\u2013' : fmt1(d);
+  }
+
+  function haversineM(a, b) {
+    var R = 6371000, rad = Math.PI / 180;
+    var dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
+    var x = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.asin(Math.sqrt(x));
+  }
+  /** Estimated walking minutes from the phone: straight line x DetourFactor / metres per minute. */
+  function walkMin(p) {
+    if (!S.pos || p.lat === null || p.lng === null) return null;
+    return (haversineM(S.pos, p) * S.settings.detourFactor) / S.settings.walkMetersPerMinute;
+  }
+  var TOO_FAR_MIN = 180; // beyond about three hours' walk (another city) an estimate is meaningless
+  function fmtWalk(min) {
+    if (min === null || min > TOO_FAR_MIN) return '';
+    var r = Math.max(1, Math.round(min));
+    return r >= 60 ? '~' + Math.floor(r / 60) + ' h ' + (r % 60) + ' min' : '~' + r + ' min';
+  }
+
+  function dirUrl(p) {
+    return 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lng + '&travelmode=walking';
+  }
+  function viewUrl(p) {
+    if (p.googleMapsUrl) return p.googleMapsUrl;
+    var q = [p.name, p.area, p.city || (S.trip && S.trip.city)].filter(Boolean).join(' ');
+    return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q);
+  }
+
+  // ------------------------------------------------------------ cities and filters
+  function cities() {
+    var count = {};
+    S.places.forEach(function (p) { if (p.city) count[p.city] = (count[p.city] || 0) + 1; });
+    if (S.trip && S.trip.city && count[S.trip.city] === undefined) count[S.trip.city] = 0;
+    return Object.keys(count).sort(function (a, b) { return count[b] - count[a] || a.localeCompare(b); });
+  }
+
+  function filtered() {
+    var any = Object.keys(S.filters).some(function (k) { return S.filters[k]; });
+    return S.places.filter(function (p) {
+      if (S.city && p.city !== S.city) return false;
+           if (S.nearby && S.pos) { var wm = walkMin(p); if (wm === null || wm > S.radius) return false; }
+                if (App.matchFilter && !App.matchFilter(p)) return false;
+      return !any || S.filters[p.category];
+    });
+  }
+
+  /** Average position of the places in view, or null when there are none. */
+  function nearPoint() {
+    var pts = (S.city ? S.places.filter(function (p) { return p.city === S.city; }) : S.places)
+      .filter(function (p) { return p.lat !== null && p.lng !== null; });
+    if (!pts.length) return null;
+    var lat = 0, lng = 0;
+    pts.forEach(function (p) { lat += p.lat; lng += p.lng; });
+    return { lat: lat / pts.length, lng: lng / pts.length };
+  }
+  function tripCentre() {
+    var n = nearPoint();
+    if (n) return [n.lat, n.lng];
+    if (S.pos) return [S.pos.lat, S.pos.lng];
+    return DEFAULT_CENTRE;
+  }
+
+  function upsertPlace(np) {
+    for (var i = 0; i < S.places.length; i++) {
+      if (S.places[i].placeId === np.placeId) { S.places[i] = np; return; }
+    }
+    S.places.push(np);
+  }
+
+  // ------------------------------------------------------------ location
+  function locate(silent) {
+    return new Promise(function (resolve) {
+      if (!navigator.geolocation) { if (!silent) toast('This browser cannot share your location.', true); resolve(false); return; }
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        S.pos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+        if (mapCtl) mapCtl.setMe(S.pos.lat, S.pos.lng, S.pos.acc);
+        renderList(); renderCard();
+        resolve(true);
+      }, function (err) {
+        if (!silent) toast(err && err.code === 1
+          ? 'Location is blocked. Allow location for this page in your browser settings.'
+          : 'Could not get your location. Try again outdoors.', true);
+        resolve(false);
+      }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+    });
+  }
+  function autoLocate() {
+    if (!navigator.permissions || !navigator.permissions.query) return;
+    navigator.permissions.query({ name: 'geolocation' }).then(function (p) {
+      if (p.state === 'granted') locate(true);
+    }).catch(function () {});
+  }
+
+  // ------------------------------------------------------------ screens
+  function showScreen(name) {
+    S.screen = name;
+    ['picker', 'map', 'list', 'route', 'trip'].forEach(function (n) { $('screen-' + n).hidden = n !== name; });
+    var inTrip = name !== 'picker';
+    $('appbar').hidden = !inTrip;
+    $('tabs').hidden = !inTrip;
+       if ($('btn-home')) $('btn-home').hidden = !inTrip;
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
+      if (b.dataset.screen === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    closeCard();
+    if (name === 'map') ensureMap();
+    if (name === 'list') renderList();
+    if (name === 'trip') renderTrip();
+       if (name === 'route' && App.routeShow) App.routeShow();
+  }
+
+  function ensureMap() {
+    if (!mapCtl) {
+      try {
+        mapCtl = RTMap.create('map', { center: tripCentre(), zoom: 14 });
+      } catch (e) { fail(e); return; }
+      if (S.pos) mapCtl.setMe(S.pos.lat, S.pos.lng, S.pos.acc);
+      mapFitted = false;
+    }
+    mapCtl.invalidate();
+    renderMap();
+    if (!mapFitted) { mapCtl.fit(); mapFitted = true; }
+  }
+
+  // ------------------------------------------------------------ rendering
+  function renderAll() {
+   renderBar(); renderChips(); renderViewBar(); renderMap(); renderList();
+    if (S.screen === 'trip') renderTrip();
+       if (S.screen === 'route' && App.routeRender) App.routeRender();
+          if (App.matchRender) App.matchRender();
+  }
+
+  function renderBar() {
+    if (!S.trip) return;
+    $('trip-title').textContent = S.trip.city;
+    $('trip-sub').textContent = [S.trip.fixture, tripDates(S.trip)].filter(Boolean).join(' \u00b7 ');
+    var list = cities();
+    var sel = $('city-select');
+    clear(sel);
+    sel.appendChild(h('option', { value: '', text: 'All cities' }));
+    list.forEach(function (c) { sel.appendChild(h('option', { value: c, text: c })); });
+    sel.value = S.city;
+    sel.hidden = list.length < 2;
+  }
+
+  function renderChips() {
+    ['chips-map', 'chips-list'].forEach(function (id) {
+      var box = $(id); clear(box);
+      var any = Object.keys(S.filters).some(function (k) { return S.filters[k]; });
+    if (App.nearbyChips) App.nearbyChips(box);
+         if (App.matchChips) App.matchChips(box);
+     box.appendChild(h('button', { type: 'button', class: 'fchip', 'aria-pressed': String(!any), text: 'All',
+        onclick: function () { S.filters = {}; mapFitted = false; renderAll(); if (S.screen === 'map') ensureMap(); } }));
+      CATS.forEach(function (c) {
+        box.appendChild(h('button', { type: 'button', class: 'fchip', 'aria-pressed': String(!!S.filters[c[0]]), text: c[1],
+          onclick: function () { S.filters[c[0]] = !S.filters[c[0]]; renderAll(); } }));
+      });
+    });
+  }
+
+  function renderMap() {
+    if (!mapCtl) return;
+    var pins = filtered().filter(function (p) { return p.lat !== null && p.lng !== null; }).map(function (p) {
+      return {
+        id: p.placeId, lat: p.lat, lng: p.lng, text: pinText(p), tone: toneFor(p),
+        title: p.name + (p.category === 'Anchor' ? ' (' + (p.anchorKind || 'reference point') + ')'
+: (viewScore(p) !== null ? ', score ' + Math.round(viewScore(p)) : ', not rated'))
+      };
+    });
+    mapCtl.setPins(pins, function (id) { openCard(id); });
+  }
+
+  function statusChip(p) {
+    return h('span', { class: 'status s-' + p.status, text: p.status });
+  }
+  function subtitle(p) {
+    var kind = p.category === 'Anchor' ? 'Anchor \u00b7 ' + (p.anchorKind || 'Other') : CAT_LABEL[p.category];
+    return [kind, p.area, (!S.city && cities().length > 1) ? p.city : ''].filter(Boolean).join(' \u00b7 ');
+  }
+
+  function rankScore(p) {
+    if (p.category === 'Anchor') return -2;
+    if (viewScore(p) !== null) return 1000 + viewScore(p);
+    var d = desireMean(p);
+    return d === null ? -1 : d;
+  }
+
+   function boostOf(p) { return App.pacingBoost ? App.pacingBoost(p) : 0; }
+   
+  function sortPlaces(arr) {
+    var rank = { Want: 0, Been: 1, Skipped: 2 };
+    arr.sort(function (a, b) {
+      var r = 0;
+      if (S.sort === 'distance') {
+        var da = walkMin(a), db = walkMin(b);
+        r = (da === null ? 1e9 : da) - (db === null ? 1e9 : db);
+      } else if (S.sort === 'status') {
+        r = (a.category === 'Anchor' ? 3 : rank[a.status]) - (b.category === 'Anchor' ? 3 : rank[b.status]);
+      }
+            else if (S.sort === 'score') r = (rankScore(b) + boostOf(b)) - (rankScore(a) + boostOf(a));
+      return r || a.name.localeCompare(b.name);
+    });
+    return arr;
+  }
+
+  function renderList() {
+    if (!S.trip) return;
+    var box = $('list'); clear(box);
+    var items = sortPlaces(filtered().slice());
+    if (!items.length) {
+      box.appendChild(h('div', { class: 'empty' }, [
+        h('p', { text: S.places.length ? (S.nearby ? 'Nothing within about ' + S.radius + ' min of you with these filters. Try a bigger radius.' : 'No places match these filters.') : 'No places yet.' }),
+        S.places.length ? null : h('button', { type: 'button', class: 'btn', text: 'Add the first place', onclick: function () { App.openAdd(); } })
+      ]));
+      return;
+    }
+    items.forEach(function (p) {
+      var tone = toneFor(p);
+      var walk = fmtWalk(walkMin(p));
+      var label = [p.name, subtitle(p), p.category === 'Anchor' ? 'reference point' : (viewScore(p) !== null ? 'score ' + Math.round(viewScore(p)) : 'not rated'),
+        p.category === 'Anchor' ? '' : p.status, p.split ? 'split decision' : '', walk].filter(Boolean).join(', ');
+      box.appendChild(h('button', { type: 'button', class: 'row-item', 'aria-label': label, onclick: function () { openCard(p.placeId); } }, [
+        h('span', { class: 'badge t-' + tone + (tone === 'anchor' ? ' sq' : ''), 'aria-hidden': 'true', text: pinText(p) }),
+        h('span', { class: 'grow' }, [
+          h('div', { class: 'name', text: p.name }),
+          h('div', { class: 'sub', text: subtitle(p) }),
+          h('div', { class: 'sub' }, [
+            p.category === 'Anchor' ? null : statusChip(p),
+            p.split ? h('span', { class: 'flag', text: ' \u26a0 Split' }) : null,
+            p.hoursNote ? h('span', { class: 'flag', text: ' \u26a0 ' + (App.matchOn && App.matchOn() ? 'Hours: ' + p.hoursNote : 'Check hours') }) : null,
+           (App.matchOn && App.matchOn() && App.matchTags) ? App.matchTags(p) : null,
+            (p.lat === null) ? h('span', { class: 'flag', text: ' No pin yet' }) : null
+          ])
+        ]),
+        h('span', { class: 'walk', text: walk })
+      ]));
+    });
+  }
+
+  // ------------------------------------------------------------ number picker (1-4)
+  /** A 1-4 picker; tapping the chosen number again clears it. Used for "desire to try". */
+  function numPick(value, onChange) {
+    var wrap = h('div', { class: 'numpick', role: 'group', 'aria-label': 'Desire to try, 1 to 4. Tap the chosen number again to clear it.' });
+    function paint() {
+      Array.prototype.forEach.call(wrap.querySelectorAll('button'), function (b) {
+        b.setAttribute('aria-pressed', String(Number(b.dataset.n) === value));
+      });
+    }
+    [1, 2, 3, 4].forEach(function (n) {
+      wrap.appendChild(h('button', { type: 'button', 'data-n': String(n), 'aria-pressed': 'false', text: String(n),
+        onclick: function () { value = value === n ? null : n; paint(); onChange(value); } }));
+    });
+    wrap.set = function (v) { value = v; paint(); };
+    paint();
+    return wrap;
+  }
+ // ------------------------------------------------------------ ratings on the card (Phase 3)
+ function fmtVisit(iso) {
+   var d = new Date(iso);
+   return isNaN(d.getTime()) ? '' : d.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+ }
+ function money(n) {
+   var cur = (S.settings && S.settings.currency) || 'GBP';
+   try { return Number(n).toLocaleString('en-GB', { style: 'currency', currency: cur }); } catch (e) { return cur + ' ' + n; }
+ }
+
+ function ratingLine(r) {
+   var parts = [nameOf(r.userEmail), r.personScore !== null ? 'score ' + Math.round(r.personScore) : 'no score'];
+   if (r.wouldReturn) parts.push('would return: ' + r.wouldReturn.toLowerCase());
+   if (r.pintPrice !== null && r.pintPrice !== undefined) parts.push('pint ' + money(r.pintPrice));
+   var when = fmtVisit(r.visitTimestamp);
+   if (when) parts.push(when);
+   return h('div', { class: 'ratingline' }, [h('div', { text: parts.join(' \u00b7 ') }), r.notes ? h('div', { class: 'muted', text: r.notes }) : null]);
+ }
+
+ /** Each person's current rating, then earlier visits (edits of the same visit are not repeated). */
+ function paintRatings(box, rows) {
+   clear(box);
+   if (!rows.length) { box.appendChild(h('p', { class: 'muted', text: 'Been here, but nobody has rated it yet.' })); return; }
+   box.appendChild(h('div', { class: 'label', text: 'Ratings' }));
+   var curVisit = {};
+   rows.forEach(function (r) { if (r.current) { curVisit[r.userEmail] = r.visitTimestamp; box.appendChild(ratingLine(r)); } });
+   var seen = {};
+   var older = rows.filter(function (r) {
+     if (r.current || r.visitTimestamp === curVisit[r.userEmail]) return false;
+     var k = r.userEmail + '|' + r.visitTimestamp;
+     if (seen[k]) return false;
+     seen[k] = true;
+     return true;
+   });
+   if (older.length) {
+     box.appendChild(h('details', { class: 'earlier' }, [h('summary', { text: 'Earlier visits (' + older.length + ')' })].concat(older.map(ratingLine))));
+   }
+ }
+
+ /** Paints from the cache, or fetches once. S.ratings is cleared on refresh and after saving a rating. */
+ function showRatings(placeId) {
+   var box = $('card-ratings');
+   if (!box) return;
+   if (S.ratings[placeId]) { paintRatings(box, S.ratings[placeId]); return; }
+   box.appendChild(h('p', { class: 'muted', text: 'Loading ratings...' }));
+   api('getRatings', placeId).then(function (rows) {
+     S.ratings[placeId] = rows;
+     var b = $('card-ratings');
+     if (b && S.selectedId === placeId) paintRatings(b, rows);
+   }).catch(function (e) {
+     var b = $('card-ratings');
+     if (b && S.selectedId === placeId) { clear(b); b.appendChild(h('p', { class: 'warnline', text: 'Could not load ratings: ' + e.message })); }
+   });
+ }
+  // ------------------------------------------------------------ place card
+  function openCard(id) {
+    S.selectedId = id;
+    beenArmed = false;
+    renderCard();
+    var t = $('card-title'); if (t) t.focus();
+  }
+  function closeCard() {
+    S.selectedId = null;
+    beenArmed = false;
+    clearTimeout(beenTimer);
+    var sh = $('sheet'); sh.hidden = true; clear(sh);
+  }
+
+  function renderCard() {
+    var sh = $('sheet');
+    var p = S.selectedId ? byId(S.selectedId) : null;
+    if (!p) { sh.hidden = true; clear(sh); return; }
+    clear(sh); sh.hidden = false;
+    var isAnchor = p.category === 'Anchor';
+    var tone = toneFor(p);
+    var walk = walkMin(p);
+
+    sh.appendChild(h('div', { class: 'sheet-head' }, [
+      h('div', {}, [
+        h('h2', { id: 'card-title', tabindex: '-1', text: p.name }),
+        h('p', { class: 'muted', text: subtitle(p) + (p.city && S.city === '' && cities().length > 1 ? '' : (p.city ? ' \u00b7 ' + p.city : '')) })
+      ]),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Close', onclick: closeCard })
+    ]));
+
+    // score
+       if (!isAnchor && S.members.length > 1) sh.appendChild(h('div', { class: 'viewbar' }, [h('span', { text: 'Scores:' }), viewSeg()]));
+    var scoreText;
+    if (isAnchor) scoreText = 'Reference point (not rated)';
+    else if (viewScore(p) !== null) scoreText = scoreWord() + ' ' + Math.round(viewScore(p)) + ' out of 100';
+    else scoreText = noScoreText();
+    var scoreCol = [h('div', { class: 'label', text: scoreText })];
+    var who = Object.keys(p.personScores || {});
+    if (who.length) scoreCol.push(h('div', { class: 'muted', text: who.map(function (e) { return nameOf(e) + ' ' + Math.round(p.personScores[e]); }).join(' \u00b7 ') }));
+    if (p.split) {
+      var vals = who.map(function (e) { return p.personScores[e]; });
+      scoreCol.push(h('div', { class: 'flag', text: '\u26a0 Split decision: scores differ by ' + Math.round(Math.max.apply(null, vals) - Math.min.apply(null, vals)) + ' points' }));
+    }
+    sh.appendChild(h('div', { class: 'scorebox' }, [
+      h('span', { class: 'badge t-' + tone + (isAnchor ? ' sq' : ''), 'aria-hidden': 'true', text: pinText(p) }),
+      h('div', {}, scoreCol),
+      isAnchor ? null : statusChip(p)
+    ]));
+
+    // desire to try
+    if (!isAnchor) {
+      var others = Object.keys(p.desireToTry || {}).filter(function (e) { return e !== S.you; })
+        .map(function (e) { return nameOf(e) + ' ' + p.desireToTry[e]; });
+      sh.appendChild(h('div', { class: 'card-block' }, [
+        h('div', { class: 'label', text: 'How keen are you to try it? (1 to 4)' }),
+        numPick(p.desireToTry && p.desireToTry[S.you] ? Number(p.desireToTry[S.you]) : null, function (n) { setDesire(p, n); }),
+        others.length ? h('p', { class: 'muted', text: 'Others: ' + others.join(' \u00b7 ') }) : null
+      ]));
+    }
+
+    // walking estimate
+    if (p.lat !== null) {
+      sh.appendChild(h('div', { class: 'card-block' }, [
+        walk !== null && walk > TOO_FAR_MIN
+          ? h('p', { class: 'muted', text: 'Too far to walk from where you are now.' })
+          : walk !== null
+            ? h('p', { text: fmtWalk(walk) + ' walk from you (estimate)' })
+            : h('button', { type: 'button', class: 'btn secondary', text: 'Use my location for walking times', onclick: function () { locate(false); } })
+      ]));
+    } else {
+      sh.appendChild(h('p', { class: 'warnline', text: '\u26a0 No pin yet for this place, so it is not on the map.' }));
+    }
+
+    if (p.hoursNote) sh.appendChild(h('p', { class: 'warnline', text: '\u26a0 Check hours: ' + p.hoursNote }));
+
+    var tags = (p.localTags || []).concat(p.matchDayTags || []);
+    if (tags.length) sh.appendChild(h('div', { class: 'card-block' }, tags.map(function (t) { return h('span', { class: 'tag' + (App.matchHot && App.matchHot(t) ? ' flag' : ''), text: tagLabel(t) }); })));
+    if (p.notes) sh.appendChild(h('p', { text: p.notes }));
+
+    var meta = ['Added by ' + nameOf(p.addedBy), 'Source: ' + p.source];
+    sh.appendChild(h('p', { class: 'muted', text: meta.join(' \u00b7 ') }));
+    if (p.lat !== null && !p.coordConfirmed) sh.appendChild(h('p', { class: 'warnline', text: '\u26a0 Pin not confirmed: check it is in the right place.' }));
+
+   // ratings (Phase 3)
+   if (!isAnchor && p.status === 'Been') {
+     sh.appendChild(h('div', { class: 'card-block', id: 'card-ratings' }));
+     showRatings(p.placeId);
+   }
+
+    // actions
+    var buttons = [];
+    buttons.push(p.lat !== null
+      ? h('a', { class: 'btn', href: dirUrl(p), target: '_blank', rel: 'noopener', text: 'Go (walking directions)' })
+      : h('span', { class: 'btn', 'aria-disabled': 'true', text: 'Go' }));
+    buttons.push(h('a', { class: 'btn secondary', href: viewUrl(p), target: '_blank', rel: 'noopener', text: 'View in Google Maps' }));
+       if (!isAnchor) buttons.push(h('button', { type: 'button', class: 'btn', text: 'Rate', onclick: function () { App.openRate(p.placeId); } }));
+          if (App.routeButton) buttons.push(App.routeButton(p));
+       
+    if (!isAnchor && p.status !== 'Been') {
+      buttons.push(h('button', { type: 'button', class: 'btn secondary', id: 'btn-been', text: 'Mark Been', onclick: function (ev) { onBeen(p, ev.currentTarget); } }));
+    }
+    if (!isAnchor && p.status === 'Want') {
+      buttons.push(h('button', { type: 'button', class: 'btn secondary', text: 'Skip', onclick: function () { checkIn(p, 'SKIP'); } }));
+    }
+    if (S.screen === 'list' && p.lat !== null) {
+      buttons.push(h('button', { type: 'button', class: 'btn secondary', text: 'Show on map', onclick: function () {
+        var id = p.placeId; showScreen('map'); mapCtl && mapCtl.flyTo(p.lat, p.lng, 17); openCard(id); } }));
+    }
+    sh.appendChild(h('div', { class: 'btn-row' }, buttons));
+  }
+
+  /** Mark Been cannot be undone (check-ins are append-only), so it needs a second tap. */
+  function onBeen(p, btn) {
+    if (!beenArmed) {
+      beenArmed = true;
+      btn.textContent = 'Tap again to confirm';
+      clearTimeout(beenTimer);
+      beenTimer = setTimeout(function () { beenArmed = false; if (btn.isConnected) btn.textContent = 'Mark Been'; }, 4000);
+      return;
+    }
+    clearTimeout(beenTimer);
+    beenArmed = false;
+    checkIn(p, 'ARRIVE');
+  }
+
+  function checkIn(p, type) {
+    var c = { tripId: S.trip.tripId, placeId: p.placeId, type: type };
+    if (S.pos) { c.lat = round6(S.pos.lat); c.lng = round6(S.pos.lng); }
+    return api('addCheckIn', c).then(function () {
+      if (type === 'ARRIVE') p.status = 'Been'; else if (p.status !== 'Been') p.status = 'Skipped';
+      renderAll(); renderCard();
+      toast(type === 'ARRIVE' ? 'Marked as been' : 'Skipped');
+    }).catch(fail);
+  }
+
+  function setDesire(p, n) {
+    return api('updatePlace', { placeId: p.placeId, myDesire: n }).then(function (np) {
+      upsertPlace(np); renderAll(); renderCard();
+    }).catch(function (e) { fail(e); renderCard(); });
+  }
+
+  // ------------------------------------------------------------ trip screen
+  function block(kids) { return h('div', { class: 'cardbox' }, kids); }
+
+  function renderTrip() {
+    var body = $('trip-body'); clear(body);
+    var t = S.trip;
+    if (!t) return;
+
+    body.appendChild(block([
+      h('h2', { text: t.city }),
+      t.fixture ? h('p', { text: t.fixture }) : null,
+      tripDates(t) ? h('p', { class: 'muted', text: tripDates(t) }) : null,
+      t.kickoffIso ? h('p', { class: 'muted', text: 'Kickoff: ' + fmtKickoff(t.kickoffIso) }) : null,
+      h('p', { class: 'muted', text: 'Your role: ' + t.role })
+    ]));
+
+if (App.tripLive) body.appendChild(App.tripLive());
+
+    // reference points: lodging first, then the ground and stations
+    var anchors = S.places.filter(function (p) { return p.category === 'Anchor'; });
+    var order = { Lodging: 0, Stadium: 1, Station: 2, Other: 3 };
+    anchors.sort(function (a, b) { return (order[a.anchorKind] - order[b.anchorKind]) || a.city.localeCompare(b.city) || a.name.localeCompare(b.name); });
+    var hasLodging = anchors.some(function (a) { return a.anchorKind === 'Lodging'; });
+    var kids = [h('h2', { text: 'Where you are staying, and key places' })];
+    if (!hasLodging) kids.push(h('p', { class: 'warnline', text: 'No lodging added yet. Add it so you always know the way home.' }));
+    anchors.forEach(function (a) {
+      kids.push(h('div', { class: 'row-item', style: 'cursor:default;min-height:56px;padding-left:0;padding-right:0;background:transparent' }, [
+        h('span', { class: 'badge t-anchor sq', 'aria-hidden': 'true', text: pinText(a) }),
+        h('span', { class: 'grow' }, [h('div', { class: 'name', text: a.name }), h('div', { class: 'sub', text: (a.anchorKind || 'Other') + (a.city ? ' \u00b7 ' + a.city : '') })]),
+        a.lat !== null ? h('a', { class: 'btn secondary', href: dirUrl(a), target: '_blank', rel: 'noopener', text: 'Go' }) : null
+      ]));
+    });
+    kids.push(h('div', { class: 'btn-row' }, [
+      h('button', { type: 'button', class: 'btn', text: '+ Add lodging', onclick: function () { App.openAdd({ category: 'Anchor', anchorKind: 'Lodging' }); } }),
+      h('button', { type: 'button', class: 'btn secondary', text: '+ Add ground', onclick: function () { App.openAdd({ category: 'Anchor', anchorKind: 'Stadium' }); } }),
+      h('button', { type: 'button', class: 'btn secondary', text: '+ Add station', onclick: function () { App.openAdd({ category: 'Anchor', anchorKind: 'Station' }); } })
+    ]));
+    body.appendChild(block(kids));
+
+    // cities
+    var cs = cities();
+    var counts = {};
+    S.places.forEach(function (p) { if (p.city) counts[p.city] = (counts[p.city] || 0) + 1; });
+    body.appendChild(block([
+      h('h2', { text: 'Cities' }),
+      h('p', { text: cs.map(function (c) { return c + ' (' + (counts[c] || 0) + ')'; }).join(', ') || 'None yet' }),
+      h('p', { class: 'muted', text: 'To add another city, add a place and type its city name. Use the city picker at the top to focus on one.' })
+    ]));
+
+    // members
+    body.appendChild(block([
+      h('h2', { text: 'Members' }),
+      h('ul', { class: 'members' }, S.members.map(function (m) {
+        return h('li', {}, [m.displayName + (m.email === S.you ? ' (you)' : '') + ' \u00b7 ' + m.role, h('div', { class: 'muted', text: m.email })]);
+      })),
+      App.memberTools ? App.memberTools() : null
+    ]));
+       if (App.tripTools) body.appendChild(App.tripTools());
+    if (App.recapCard) body.appendChild(App.recapCard());
+    body.appendChild(block([
+      h('div', { class: 'btn-row' }, [
+        h('button', { type: 'button', class: 'btn secondary', text: 'Refresh data', onclick: refresh }),
+        h('button', { type: 'button', class: 'btn secondary', text: 'Switch trip', onclick: showPicker })
+      ])
+    ]));
+  }
+
+  // ------------------------------------------------------------ trips: picker, open, refresh, create
+  function showPicker() {
+       if (App.syncStop) App.syncStop();closeCard();
+    showScreen('picker');
+    api('getMyTrips').then(function (trips) { S.trips = trips; renderPicker(); }).catch(function (e) {
+      $('picker-msg').textContent = 'Could not load your trips: ' + e.message;
+      clear($('trip-list'));
+      $('trip-list').appendChild(h('button', { type: 'button', class: 'btn', text: 'Try again', onclick: showPicker }));
+    });
+  }
+
+  function renderPicker() {
+    var list = $('trip-list'); clear(list);
+    $('picker-msg').textContent = S.trips.length ? 'Choose a trip to open.' : 'You are not on any trips yet. Start one below, or ask the organiser to add your Google email.';
+    S.trips.forEach(function (t) {
+      list.appendChild(h('button', { type: 'button', class: 'row-item', onclick: function () { openTrip(t.tripId); } }, [
+        h('span', { class: 'grow' }, [
+          h('div', { class: 'name', text: t.city }),
+          h('div', { class: 'sub', text: [t.fixture, tripDates(t), t.role].filter(Boolean).join(' \u00b7 ') })
+        ])
+      ]));
+    });
+    $('new-trip').open = S.trips.length === 0;
+  }
+
+  function openTrip(id, opts) {
+    return api('getTripData', id).then(function (d) {
+      S.trip = d.trip; S.members = d.members; S.settings = d.settings; S.places = d.places; S.you = d.you;
+     S.criteria = d.criteria || {}; S.ratings = {};
+      S.filters = {}; S.city = ''; S.selectedId = null; S.view = 'both';
+      if (mapCtl) { mapCtl.destroy(); mapCtl = null; }
+      mapFitted = false;
+      renderAll();
+      showScreen(opts && opts.setup ? 'trip' : 'map');
+      autoLocate();
+           if (App.syncStart) App.syncStart(d);
+    }).catch(fail);
+  }
+
+  function refresh() {
+    if (!S.trip) return;
+    return api('getTripData', S.trip.tripId).then(function (d) {
+      S.trip = d.trip; S.members = d.members; S.settings = d.settings; S.places = d.places;
+      S.criteria = d.criteria || {}; S.ratings = {};
+      if (App.syncReset) App.syncReset(d);if (S.city && cities().indexOf(S.city) < 0) S.city = '';
+      renderAll(); renderCard();
+      if (S.selectedId && !byId(S.selectedId)) closeCard();
+      toast('Up to date');
+    }).catch(fail);
+  }
+
+  function createTrip() {
+    var city = $('nt-city').value.trim();
+    if (!city) { toast('Enter the main city for the trip.', true); $('nt-city').focus(); return; }
+    var btn = $('nt-create'); btn.disabled = true;
+    api('createTrip', {
+      city: city, displayName: $('nt-name').value.trim(), startDate: $('nt-start').value, endDate: $('nt-end').value,
+      fixture: $('nt-fixture').value.trim(), kickoffIso: $('nt-kickoff').value
+    }).then(function (t) {
+      ['nt-city', 'nt-name', 'nt-start', 'nt-end', 'nt-fixture', 'nt-kickoff'].forEach(function (id) { $(id).value = ''; });
+      return openTrip(t.tripId, { setup: true }).then(function () { toast('Trip created. Add where you are staying next.'); });
+    }).catch(fail).then(function () { btn.disabled = false; });
+  }
+
+  // ------------------------------------------------------------ wiring and boot
+  function wire() {
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
+      b.addEventListener('click', function () { showScreen(b.dataset.screen); });
+    });
+    $('btn-refresh').addEventListener('click', refresh);
+    $('btn-add').addEventListener('click', function () { App.openAdd(); });
+    $('btn-locate').addEventListener('click', function () {
+      locate(false).then(function (ok) { if (ok && mapCtl) mapCtl.flyTo(S.pos.lat, S.pos.lng, 16); });
+    });
+    $('sort-select').addEventListener('change', function (e) {
+      S.sort = e.target.value;
+      if (S.sort === 'distance' && !S.pos) {
+        locate(false).then(function (ok) { if (!ok) toast('Turn on location to sort by distance.', true); renderList(); });
+      }
+      renderList();
+    });
+    $('city-select').addEventListener('change', function (e) {
+      S.city = e.target.value;
+      mapFitted = false;
+      closeCard();
+      renderAll();
+      if (S.screen === 'map') ensureMap();
+    });
+    $('nt-create').addEventListener('click', createTrip);
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+    if (!$('rate').hidden && App.closeRate) App.closeRate(); else if (!$('add').hidden && App.closeAdd) App.closeAdd(); else closeCard();
+    });
+  }
+
+  function boot() {
+    wire();
+    showScreen('picker');
+    api('getMyTrips').then(function (trips) {
+      S.trips = trips;
+      renderPicker();
+      if (trips.length === 1) openTrip(trips[0].tripId);
+    }).catch(function (e) {
+      $('picker-msg').textContent = 'Could not load your trips: ' + e.message;
+      $('trip-list').appendChild(h('button', { type: 'button', class: 'btn', text: 'Try again', onclick: showPicker }));
+    });
+  }
+
+  // Shared with AddPlace.html
+  App.S = S; App.$ = $; App.h = h; App.clear = clear; App.api = api; App.toast = toast; App.fail = fail;
+  App.CATS = CATS; App.CAT_LABEL = CAT_LABEL; App.cities = cities; App.nearPoint = nearPoint; App.tripCentre = tripCentre;
+  App.upsertPlace = upsertPlace; App.openCard = openCard; App.renderAll = renderAll; App.numPick = numPick;
+  App.round6 = round6; App.showScreen = showScreen; App.getMapCtl = function () { return mapCtl; };
+App.boot = boot;
+ App.byId = byId; App.fmtVisit = fmtVisit; App.money = money;
+ App.renderMap = renderMap; App.renderList = renderList; App.renderCard = renderCard; App.closeCard = closeCard;
+ App.locate = locate; App.nameOf = nameOf; App.filtered = filtered; App.walkMin = walkMin; App.fmtWalk = fmtWalk;
+  App.haversineM = haversineM;
+   App.refresh = refresh; App.dirUrl = dirUrl; App.viewUrl = viewUrl;
+  document.addEventListener('DOMContentLoaded', boot);
+})();
+</script>

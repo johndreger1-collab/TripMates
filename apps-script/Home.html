@@ -1,0 +1,234 @@
+<script>
+/**
+ * Home.html: "Get me home" and match-day mode. Shares helpers with Client.html through App.
+ *
+ *   Get me home   one tap from any trip screen. Picks the lodging nearest you (or in the city you are
+ *                 looking at), shows the estimated walk (~), and opens Google Maps walking or transit
+ *                 directions. Also shows the nearest station or tram stop. With no lodging it says so.
+ *   Match day     switches on by itself from MatchDayWindowHoursBefore before kickoff to ...After after it.
+ *                 Adds a countdown banner, "Near the ground" and "Easy to get in" filters, highlighted
+ *                 match-day tags, and the full hours note in the list.
+ */
+(function () {
+  'use strict';
+  var h = App.h, $ = App.$, clear = App.clear, S = App.S;
+  var NEAR_GROUND_MIN = 15;          // "near the ground" means about this many minutes' walk or less
+  var HOT = { ticket_only: ['\u26a0', 'ticket only'], queue_risk: ['\u26a0', 'queue risk'], cash_only: ['\u26a0', 'cash only'], away_fans_welcome: ['\u2713', 'away fans welcome'] };
+  var HARD = { queue_risk: true, ticket_only: true };       // "Easy to get in" hides these
+  var nearGround = false, easyIn = false, lastOn = false;
+
+  function hasPin(p) { return !!p && p.lat !== null && p.lat !== undefined && p.lng !== null && p.lng !== undefined; }
+  function chip(text, pressed, onclick, label) {
+    return h('button', { type: 'button', class: 'fchip', 'aria-pressed': String(pressed), 'aria-label': label || null, text: text, onclick: onclick });
+  }
+
+  // ---------------------------------------------------------------- match day
+  function state() {
+    var k = S.trip && S.trip.kickoffIso ? Date.parse(S.trip.kickoffIso) : NaN;
+    if (isNaN(k) || !S.settings) return { on: false };
+    var before = (Number(S.settings.matchDayWindowHoursBefore) || 0) * 3600000;
+    var after = (Number(S.settings.matchDayWindowHoursAfter) || 0) * 3600000;
+    var now = Date.now();
+    return { on: now >= k - before && now <= k + after, diff: k - now };
+  }
+  function matchOn() { return state().on; }
+
+  function fmtDur(ms) {
+    var mins = Math.round(ms / 60000);
+    if (mins < 1) return 'under a minute';
+    if (mins < 60) return mins + ' min';
+    var hrs = Math.floor(mins / 60), m = mins % 60;
+    if (hrs >= 24) return Math.floor(hrs / 24) + ' d ' + (hrs % 24) + ' h';
+    return hrs + ' h' + (m ? ' ' + m + ' min' : '');
+  }
+
+  /** Stadium anchors with a pin, plus the trip's own venue coordinates if they were set. */
+  function groundPoints() {
+    var pts = S.places.filter(function (p) { return p.category === 'Anchor' && p.anchorKind === 'Stadium' && hasPin(p); });
+    if (S.trip && S.trip.venueLat !== null && S.trip.venueLat !== undefined && S.trip.venueLng !== null && S.trip.venueLng !== undefined) {
+      pts.push({ lat: S.trip.venueLat, lng: S.trip.venueLng });
+    }
+    return pts;
+  }
+  /** Estimated walking minutes from the nearest ground (straight line x detour / walking speed), or null. */
+  function groundMin(p) {
+    if (!hasPin(p)) return null;
+    var best = null;
+    groundPoints().forEach(function (g) {
+      var m = App.haversineM(g, p) * (Number(S.settings.detourFactor) || 1.3) / (Number(S.settings.walkMetersPerMinute) || 80);
+      if (best === null || m < best) best = m;
+    });
+    return best;
+  }
+
+  function matchFilter(p) {
+    if (!matchOn()) return true;
+    if (nearGround) { var m = groundMin(p); if (m === null || m > NEAR_GROUND_MIN) return false; }
+    if (easyIn && (p.matchDayTags || []).some(function (t) { return HARD[t]; })) return false;
+    return true;
+  }
+
+  /** Called by Client.html's renderChips, after the Nearby chips. */
+  function matchChips(box) {
+    if (!matchOn()) return;
+    if (groundPoints().length) {
+      box.appendChild(chip('Near the ground', nearGround, function () { nearGround = !nearGround; refilter(); },
+        'Only places within about ' + NEAR_GROUND_MIN + ' minutes walk of the ground'));
+    }
+    box.appendChild(chip('Easy to get in', easyIn, function () { easyIn = !easyIn; refilter(); }, 'Hide places with a queue risk or ticket-only entry'));
+  }
+
+  function refilter() {
+    App.renderAll();
+    var ctl = App.getMapCtl();
+    if (S.screen === 'map' && ctl) ctl.fit();
+  }
+
+  function renderBanner() {
+    var el = $('matchbar');
+    if (!el) return;
+    clear(el);
+    var st = S.trip ? state() : { on: false };
+    el.hidden = !st.on;
+    if (!st.on) return;
+    var when = st.diff > 60000 ? 'Kickoff in ' + fmtDur(st.diff) : (st.diff > -60000 ? 'Kickoff now' : 'Kicked off ' + fmtDur(-st.diff) + ' ago');
+    el.appendChild(h('strong', { text: 'Match day' }));
+    el.appendChild(h('span', { text: ' \u00b7 ' + (S.trip.fixture ? S.trip.fixture + ' \u00b7 ' : '') + when }));
+    if (!groundPoints().length) el.appendChild(h('div', { class: 'muted', text: 'Add the ground on the Trip tab to use Near the ground.' }));
+  }
+
+  /** Called from renderAll. Also notices the moment match day starts or ends, and redraws the chips then. */
+  function matchRender() {
+    renderBanner();
+    var on = matchOn();
+    if (on !== lastOn) {
+      lastOn = on;
+      if (!on) { nearGround = false; easyIn = false; }
+      setTimeout(function () { if (S.trip) App.renderAll(); }, 0);
+    }
+  }
+
+  function matchTags(p) {
+    var tags = (p.matchDayTags || []).filter(function (t) { return HOT[t]; });
+    if (!tags.length) return null;
+    return h('span', { class: 'flag', text: ' ' + tags.map(function (t) { return HOT[t][0] + ' ' + HOT[t][1]; }).join(' \u00b7 ') });
+  }
+  function matchHot(t) { return matchOn() && !!HOT[t]; }
+
+  setInterval(function () { if (S.trip) matchRender(); }, 30000);
+
+  // ---------------------------------------------------------------- get me home
+  var HM = null;
+
+  function openHome() {
+    if (!S.trip) return;
+    HM = { sel: '' };
+    var root = $('home');
+    clear(root);
+    root.hidden = false;
+    root.scrollTop = 0;
+    document.body.classList.add('noscroll');
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { id: 'home-title', tabindex: '-1', text: 'Get me home' }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Close', onclick: closeHome })
+    ]));
+    HM.body = h('div', {});
+    root.appendChild(HM.body);
+    paintHome();
+    var t = $('home-title'); if (t) t.focus();
+    App.locate(true).then(function (ok) { if (HM && ok) paintHome(); });      // freshen the position quietly
+  }
+
+  function closeHome() {
+    HM = null;
+    var root = $('home');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
+  function transitUrl(p) { return 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lng + '&travelmode=transit'; }
+
+  function chooseLodging(list) {
+    var chosen = null;
+    list.forEach(function (p) { if (p.placeId === HM.sel) chosen = p; });
+    if (chosen) return chosen;
+    if (S.pos) {
+      var best = null, bd = Infinity;
+      list.forEach(function (p) { var d = App.haversineM(S.pos, p); if (d < bd) { bd = d; best = p; } });
+      return best;
+    }
+    var inCity = list.filter(function (p) { return S.city && p.city === S.city; });
+    return inCity.length ? inCity[0] : list[0];
+  }
+
+  function paintHome() {
+    clear(HM.body);
+    var all = S.places.filter(function (p) { return p.category === 'Anchor' && p.anchorKind === 'Lodging'; });
+    var pinned = all.filter(hasPin);
+    if (!pinned.length) {
+      HM.body.appendChild(h('div', { class: 'cardbox' }, [
+        h('p', { text: all.length ? 'Your lodging has no pin yet, so there is no way to find it.' : 'No lodging set yet.' }),
+        h('p', { class: 'muted', text: all.length
+          ? 'Open the Trip tab, check the pin under Pins to review, then try again.'
+          : 'Add where you are staying, and this button will get you back to it from anywhere.' }),
+        all.length ? null : h('button', { type: 'button', class: 'btn', text: 'Add lodging',
+          onclick: function () { closeHome(); if (App.openAdd) App.openAdd({ category: 'Anchor', anchorKind: 'Lodging' }); } })
+      ]));
+      return;
+    }
+    var lodge = chooseLodging(pinned);
+    var kids = [h('h2', { text: lodge.name }), h('p', { class: 'muted', text: [lodge.area, lodge.city].filter(Boolean).join(' \u00b7 ') })];
+    if (pinned.length > 1) {
+      var sel = h('select', { id: 'home-lodging', 'aria-label': 'Which lodging?' }, pinned.map(function (p) {
+        return h('option', { value: p.placeId, text: p.name + (p.city ? ' (' + p.city + ')' : '') });
+      }));
+      sel.value = lodge.placeId;
+      sel.addEventListener('change', function () { HM.sel = sel.value; paintHome(); });
+      kids.push(h('div', { class: 'field' }, [h('label', { for: 'home-lodging', text: 'Which lodging?' }), sel]));
+    }
+    var min = App.walkMin(lodge);
+    if (min === null) {
+      kids.push(h('button', { type: 'button', class: 'btn secondary', text: 'Use my location for the walking time',
+        onclick: function () { App.locate(false).then(function () { if (HM) paintHome(); }); } }));
+    } else if (min > 180) {
+      kids.push(h('p', { class: 'label', text: 'About ' + Math.round(min / 60) + ' h away on foot. Transit is probably the better way home.' }));
+    } else {
+      kids.push(h('p', { class: 'label', text: App.fmtWalk(min) + ' walk home (estimate)' }));
+    }
+    kids.push(h('div', { class: 'btn-row' }, [
+      h('a', { class: 'btn', href: App.dirUrl(lodge), target: '_blank', rel: 'noopener', text: 'Walk home (Google Maps)' }),
+      h('a', { class: 'btn', href: transitUrl(lodge), target: '_blank', rel: 'noopener', text: 'Transit home (Google Maps)' })
+    ]));
+    HM.body.appendChild(h('div', { class: 'cardbox' }, kids));
+
+    // nearest station or tram stop: to you if we know where you are, otherwise to the lodging
+    var ref = S.pos ? { lat: S.pos.lat, lng: S.pos.lng } : lodge;
+    var stops = S.places.filter(function (p) { return p.category === 'Anchor' && p.anchorKind === 'Station' && hasPin(p); });
+    var near = null, nd = Infinity;
+    stops.forEach(function (p) { var d = App.haversineM(ref, p); if (d < nd) { nd = d; near = p; } });
+    if (near) {
+      var mins = nd * (Number(S.settings.detourFactor) || 1.3) / (Number(S.settings.walkMetersPerMinute) || 80);
+      HM.body.appendChild(h('div', { class: 'cardbox' }, [
+        h('h2', { text: 'Nearest station or tram stop' }),
+        h('p', { class: 'label', text: near.name }),
+        h('p', { class: 'muted', text: (mins > 180 ? 'Far away' : App.fmtWalk(mins) + ' walk') + (S.pos ? ' from you (estimate)' : ' from your lodging (estimate)') }),
+        h('div', { class: 'btn-row' }, [h('a', { class: 'btn secondary', href: App.dirUrl(near), target: '_blank', rel: 'noopener', text: 'Go there (walking)' })])
+      ]));
+    } else {
+      HM.body.appendChild(h('p', { class: 'muted pad', text: 'No station or tram stop has been added yet. On the Trip tab, use + Add station.' }));
+    }
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && HM) { closeHome(); e.stopImmediatePropagation(); }
+  }, true);
+  $('btn-home').addEventListener('click', openHome);
+
+  function homeReset() { nearGround = false; easyIn = false; lastOn = false; if (HM) closeHome(); }
+
+  App.openHome = openHome; App.closeHome = closeHome; App.homeReset = homeReset;
+  App.matchChips = matchChips; App.matchFilter = matchFilter; App.matchOn = matchOn;
+  App.matchTags = matchTags; App.matchHot = matchHot; App.matchRender = matchRender;
+})();
+</script>

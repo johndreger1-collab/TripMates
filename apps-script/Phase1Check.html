@@ -1,0 +1,109 @@
+
+
+Phase1check · HTML
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <title>Rugby Trip: member check</title>
+  <style>
+    :root { --bg:#f4f4f0; --fg:#15181a; --muted:#4f565c; --card:#fff; --line:#c4c8cc; --accent:#0b5d3b; --accent-fg:#fff; --fail:#b3261e; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#101312; --fg:#eef1ef; --muted:#aab2b4; --card:#1b1f1e; --line:#3b4240; --accent:#5cc690; --accent-fg:#05220f; --fail:#ff8f86; } }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    header { padding: 14px; } h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 18px; margin: 0 0 6px; }
+    main { padding: 0 12px 40px; display: grid; gap: 12px; max-width: 760px; margin: 0 auto; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .muted, .help { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+    .btn { min-height: 48px; padding: 0 16px; border-radius: 10px; border: 2px solid var(--accent); background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 600; cursor: pointer; }
+    .btn.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
+    .btn:disabled { opacity: .5; }
+    label { font-size: 14px; font-weight: 600; display: block; }
+    input[type=text] { width: 100%; min-height: 48px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); font: inherit; margin: 4px 0 8px; }
+    pre { white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 8px 0 0; min-height: 40px; }
+    .err { color: var(--fail); font-weight: 700; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Member check</h1>
+    <p class="muted">A plain test page. Until member tools arrive in a later phase, this is how you add a person to a trip. The normal app is at the address without <code>?page=phase1</code>.</p>
+  </header>
+  <main>
+    <section class="card">
+      <h2>1. My trips</h2>
+      <p class="help">Shows every trip your Google account belongs to, and your role. Copy a trip id from here.</p>
+      <button type="button" class="btn" id="b-trips">Show my trips</button>
+      <pre id="o-trips" aria-live="polite"></pre>
+    </section>
+ 
+    <section class="card">
+      <h2>2. Add a member (trip owner only)</h2>
+      <p class="help">Remember to also share the spreadsheet with them (Editor).</p>
+      <label for="i-trip-add">Trip id</label>
+      <input type="text" id="i-trip-add" autocomplete="off" autocapitalize="off">
+      <label for="i-email">Their Google email</label>
+      <input type="text" id="i-email" inputmode="email" autocomplete="off" autocapitalize="off">
+      <label for="i-dn">Display name (optional)</label>
+      <input type="text" id="i-dn" autocomplete="off">
+      <button type="button" class="btn" id="b-add">Add as member</button>
+      <pre id="o-add" aria-live="polite"></pre>
+    </section>
+ 
+    <section class="card">
+      <h2>3. Read a trip's members</h2>
+      <p class="help">Leave the trip id blank to use the first trip in your list.</p>
+      <label for="i-trip-read">Trip id (optional)</label>
+      <input type="text" id="i-trip-read" autocomplete="off" autocapitalize="off">
+      <button type="button" class="btn secondary" id="b-members">Read members</button>
+      <pre id="o-read" aria-live="polite"></pre>
+    </section>
+  </main>
+ 
+  <script>
+    (function () {
+      'use strict';
+      function $(id) { return document.getElementById(id); }
+      function call(name) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        return new Promise(function (resolve, reject) {
+          var r = google.script.run.withSuccessHandler(resolve)
+            .withFailureHandler(function (e) { reject(new Error(e && e.message ? e.message : String(e))); });
+          r[name].apply(r, args);
+        });
+      }
+      function show(id, value, isError) {
+        var out = $(id);
+        out.className = isError ? 'err' : '';
+        out.textContent = isError ? 'Error: ' + value : JSON.stringify(value, null, 2);
+      }
+      function run(btnId, outId, fn) {
+        $(btnId).addEventListener('click', function () {
+          var btn = $(btnId);
+          btn.disabled = true;
+          show(outId, 'Working...', false);
+          fn().then(function (v) { show(outId, v, false); }, function (e) { show(outId, e.message, true); })
+              .then(function () { btn.disabled = false; });
+        });
+      }
+      function tripIdFor(inputId) {
+        var typed = $(inputId).value.trim();
+        if (typed) return Promise.resolve(typed);
+        return call('getMyTrips').then(function (t) {
+          if (!t.length) throw new Error('You have no trips yet.');
+          return t[0].tripId;
+        });
+      }
+      run('b-trips', 'o-trips', function () { return call('getMyTrips'); });
+      run('b-add', 'o-add', function () {
+        return call('addMember', $('i-trip-add').value.trim(), $('i-email').value.trim(), $('i-dn').value.trim());
+      });
+      run('b-members', 'o-read', function () {
+        return tripIdFor('i-trip-read').then(function (id) { return call('getMembers', id); });
+      });
+    })();
+  </script>
+</body>
+</html>
+ 
