@@ -45,7 +45,7 @@ Files (19; in `apps-script/` the `.gs` files are saved as `.js`, see D19): `apps
 | 4 | Nearby, live sync, check-in, tally, mood | Done | Yes, on phones (owner, Nov 2026) | |
 | 5 | Route builder, stale-save retry, legs, rhythm warning | Done | Yes, on phones (owner, Nov 2026). Confirm that S6 (two phones editing one route at once) was part of it | |
 | 6 | Get me home (floating button), match day, seed/CSV import, pins to review, members, settings | Done and wired in | Yes, on phones (owner, Nov 2026) | The `?page=phase1` member workaround has gone from the Trip tab |
-| 7 | Google Maps search shortcuts (`Extras.html`, `#find`), trip recap (`getTripRecap`), food nudge + wind-down (`Live.html`, `#nudgebar`, `PacingEnabled`), exact walking times for route legs (`getExactWalkingTimes`, `Maps.newDirectionFinder`), route "Suggest order" (nearest neighbour + 2-opt, `Route.html`) | Done | Yes, on phones (owner, Nov 2026). Confirm "Suggest order" was included | Styles fixed in R0 (defect 1) |
+| 7 | Google Maps search shortcuts (`Extras.html`, `#find`), trip recap (`getTripRecap`), food nudge + wind-down (`Live.html`, `#nudgebar`, `PacingEnabled`), exact walking times for route legs (`getExactWalkingTimes`, `Maps.newDirectionFinder`), route "Suggest order" (nearest neighbour + 2-opt, `Route.html`) | Done | Yes, on phones (owner, Nov 2026), except "Suggest order" (not phone-tested; owner wants it kept) | Styles fixed in R0 (defect 1) |
 
 Not built: offline use, editing a trip after
 creation (`updateTrip`).
@@ -139,8 +139,13 @@ Owner steps to finish R0:
    still run the old deployment version until step 3.
 2. In the editor, run `runPhase1Tests` … `runPhase7Tests` and the
    `…PublicSmokeTest` / `runPhase2LiveChecks` functions. All must pass.
-3. When happy, Deploy → Manage deployments → edit → New version, and check the
-   food nudge (`PacingEnabled=true`) and wind-down on one phone.
+3. When happy, Deploy → Manage deployments → edit → New version, and check on
+   both phones: the map screen has no stray `+ Add place:` text; the food
+   nudge (`PacingEnabled=true`) and wind-down look right; and route
+   **Suggest order** works (zig-zag route of 4+ pinned stops → Suggest → Not
+   now changes nothing → Apply reorders and the other phone sees it within
+   ~20 s → Suggest again says "already about as short" → a visited stop stays
+   put → button disabled with one unvisited stop).
 
 Then **R1** (spike: sign-in, API, PWA on both phones). Skip R0b; the old app is
 tested and is the fallback.
