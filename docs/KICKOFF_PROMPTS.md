@@ -13,7 +13,7 @@ Copy and paste these. Keep them short: the detail lives in CLAUDE.md and docs/.
 > docs assume. If I haven't given a path, use the docs' defaults.
 >
 > Then plan Phase R0: list the files you'll create or change and your
-> assumptions. The Apps Script ID is `<script id>`. Wait for my go-ahead.
+> assumptions. The Apps Script ID is `1QRjBG_l_1KihSPqoQLBpKm7kIBXUVkVL5ZGIj-CChptcdwDT1g3WbkU9`. Wait for my go-ahead.
 
 ## Each later phase
 
