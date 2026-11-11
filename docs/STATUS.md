@@ -1,7 +1,7 @@
 # Status — Tripmates (formerly Rugby Trip Companion)
 
 *Last updated: 11 November 2026, Phase R0 (live code pulled with `clasp clone`
-and committed as a baseline; defects 1-5 and 10 fixed). Update this file at the
+and committed as a baseline; defects 1-5, 10 and 11 fixed). Update this file at the
 end of every phase.
 
 ## One-line summary
@@ -77,8 +77,8 @@ creation (`updateTrip`).
 ## Defects found in the live scripts (11 Nov 2026)
 
 All small. Re-checked against the cloned code in R0: every item below is
-confirmed. **1-5 and 10 are fixed in R0** (in git; live once the owner runs
-`clasp push`). 6-9 carry into the rewrite; 11 is new.
+confirmed. **1-5, 10 and 11 are fixed in R0** (in git; live once the owner runs
+`clasp push`). 6-9 carry into the rewrite.
 
 1. *(Fixed in R0.)* **Phase 7 styles are placeholders.** `Styles.html` contains literally
    `.nudgebar { ... }`, `.nudgebar .btn-row { ... }` and `.homefab.wind { ... }`
@@ -103,10 +103,9 @@ confirmed. **1-5 and 10 are fixed in R0** (in git; live once the owner runs
 9. **Route "Mark visited" does not record an ARRIVE check-in**, so the place does
    not become Been. Owner decided it should (D14); build it in R7.
 10. *(Fixed in R0.)* `Code.gs` header comment is out of date (still describes Phase 1).
-11. **Stray text on the map screen** (found in R0, not fixed: outside the agreed
-    list). `Index.html` has the literal text `+ Add place:` just before the
-    "Search Google Maps" button, so it probably shows on the map. Delete the
-    text in R0b or carry into the rewrite (R4 replaces this screen).
+11. *(Found and fixed in R0.)* **Stray text on the map screen.** `Index.html`
+    had the literal text `+ Add place:` just before the "Search Google Maps"
+    button, so it showed on the map.
 
 Fixed since the 8 October snapshots: Phase 6 is wired in; Get me home is a
 floating button; `cleanupTestData_` now deletes `Routes` rows.
@@ -131,8 +130,8 @@ floating button; `cleanupTestData_` now deletes `Routes` rows.
 **R0: Repository baseline: code done, owner steps left.**
 
 Done (11 Nov 2026): `apps-script/` holds the live project exactly as cloned
-(commit "Baseline: live Apps Script project…"); defects 1-5 and 10 are fixed
-in a separate commit; every server file and every inline `<script>` passes a
+(commit "Baseline: live Apps Script project…"); defects 1-5, 10 and 11 are fixed
+in separate commits; every server file and every inline `<script>` passes a
 syntax check; the new styles were checked in a browser, light and dark.
 
 Owner steps to finish R0:
