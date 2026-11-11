@@ -1,0 +1,30 @@
+City,Name,Category,Area,Lat,Lng,GoogleMapsUrl,LocalTags,MatchDayTags,HoursNote,Notes,LastVerified,VerifyFlag
+Edinburgh,Murrayfield Stadium,Anchor,Murrayfield,,,https://www.google.com/maps/search/?api=1&query=Murrayfield%20Stadium%20Murrayfield%20Edinburgh,,,,Ground. Set as the trip venue,,Yes
+Edinburgh,Haymarket Station,Anchor,Haymarket,,,https://www.google.com/maps/search/?api=1&query=Haymarket%20Station%20Haymarket%20Edinburgh,,,,Rail and tram hub on the route to the ground,,Yes
+Edinburgh,Edinburgh Waverley,Anchor,City Centre,,,https://www.google.com/maps/search/?api=1&query=Edinburgh%20Waverley%20City%20Centre%20Edinburgh,,,,Main station. Check last trains and trams for the night,,Yes
+Edinburgh,Ryrie's Bar,Pub,Haymarket,,,https://www.google.com/maps/search/?api=1&query=Ryrie%27s%20Bar%20Haymarket%20Edinburgh,,"queue_risk,shows_live_rugby",,Traditional pub next to Haymarket on the walk to the ground,,Yes
+Edinburgh,The Roseburn Bar,Pub,Roseburn,,,https://www.google.com/maps/search/?api=1&query=The%20Roseburn%20Bar%20Roseburn%20Edinburgh,,"queue_risk,shows_live_rugby",,Near the ground; expect crowds on match days,,Yes
+Edinburgh,The Athletic Arms (Diggers),Pub,Gorgie,,,https://www.google.com/maps/search/?api=1&query=The%20Athletic%20Arms%20%28Diggers%29%20Gorgie%20Edinburgh,"proper_boozer,locals_favourite",queue_risk,,Famous local; pies and a pint. Football-heavy area so check fixtures,,Yes
+Edinburgh,Sheep Heid Inn,Pub,Duddingston,,,https://www.google.com/maps/search/?api=1&query=Sheep%20Heid%20Inn%20Duddingston%20Edinburgh,"proper_boozer,hidden_gem",,,Historic pub near Arthur's Seat; good for an unhurried day,,Yes
+Edinburgh,The Oxford Bar,Pub,New Town,,,https://www.google.com/maps/search/?api=1&query=The%20Oxford%20Bar%20New%20Town%20Edinburgh,"proper_boozer,locals_favourite",,Check opening hours,Small and old-school; space is tight,,Yes
+Edinburgh,Bennets Bar,Pub,Tollcross,,,https://www.google.com/maps/search/?api=1&query=Bennets%20Bar%20Tollcross%20Edinburgh,"proper_boozer,locals_favourite",,,Victorian interior and a good whisky back-bar,,Yes
+Edinburgh,Kay's Bar,Pub,New Town,,,https://www.google.com/maps/search/?api=1&query=Kay%27s%20Bar%20New%20Town%20Edinburgh,"proper_boozer,hidden_gem",,,Tiny and cosy; very limited space,,Yes
+Edinburgh,Sandy Bell's,Pub,Old Town,,,https://www.google.com/maps/search/?api=1&query=Sandy%20Bell%27s%20Old%20Town%20Edinburgh,"proper_boozer,locals_favourite",,,Folk music sessions; check what is on,,Yes
+Edinburgh,Café Royal Circle Bar,Pub,New Town,,,https://www.google.com/maps/search/?api=1&query=Caf%C3%A9%20Royal%20Circle%20Bar%20New%20Town%20Edinburgh,,,,Ornate Victorian bar; known for oysters and ales,,Yes
+Edinburgh,The Bow Bar,Whisky_Bar,Old Town,,,https://www.google.com/maps/search/?api=1&query=The%20Bow%20Bar%20Old%20Town%20Edinburgh,"whisky_bar_real_list,proper_boozer",queue_risk,,Large whisky range and cask ales; small and busy,,Yes
+Edinburgh,Teuchters Landing,Pub,Leith,,,https://www.google.com/maps/search/?api=1&query=Teuchters%20Landing%20Leith%20Edinburgh,locals_favourite,,,Waterfront in Leith; good for a pre- or post-match wander,,Yes
+Edinburgh,Malone's Irish Bar,Pub,Central,,,https://www.google.com/maps/search/?api=1&query=Malone%27s%20Irish%20Bar%20Central%20Edinburgh,great_guinness,queue_risk,,Irish bar to test the Guinness; confirm location and opening hours,,Yes
+Edinburgh,Finnegan's Wake,Pub,Old Town,,,https://www.google.com/maps/search/?api=1&query=Finnegan%27s%20Wake%20Old%20Town%20Edinburgh,great_guinness,queue_risk,,Irish bar near the Old Town; confirm,,Yes
+Edinburgh,The Scotch Whisky Experience,Tasting,Royal Mile,,,https://www.google.com/maps/search/?api=1&query=The%20Scotch%20Whisky%20Experience%20Royal%20Mile%20Edinburgh,tourist_trap,,Book ahead,Structured whisky tour and tasting; check tour times against kickoff,,Yes
+Edinburgh,Holyrood Distillery,Tasting,Holyrood,,,https://www.google.com/maps/search/?api=1&query=Holyrood%20Distillery%20Holyrood%20Edinburgh,,,Book ahead,Distillery tour,,Yes
+Edinburgh,Bramble,Cocktails,New Town,,,https://www.google.com/maps/search/?api=1&query=Bramble%20New%20Town%20Edinburgh,,,,Basement cocktail bar,,Yes
+Edinburgh,Panda & Sons,Cocktails,New Town,,,https://www.google.com/maps/search/?api=1&query=Panda%20%26%20Sons%20New%20Town%20Edinburgh,hidden_gem,,,Speakeasy-style; look for the barber shop entrance,,Yes
+Edinburgh,Mums Great Comfort Food,Restaurant,Old Town,,,https://www.google.com/maps/search/?api=1&query=Mums%20Great%20Comfort%20Food%20Old%20Town%20Edinburgh,,,,Hearty sit-down food; good for a food stop,,Yes
+Edinburgh,Dishoom Edinburgh,Restaurant,New Town,,,https://www.google.com/maps/search/?api=1&query=Dishoom%20Edinburgh%20New%20Town%20Edinburgh,,queue_risk,,Often has a queue; plan ahead,,Yes
+Edinburgh,The Fishmarket Newhaven,Restaurant,Newhaven,,,https://www.google.com/maps/search/?api=1&query=The%20Fishmarket%20Newhaven%20Newhaven%20Edinburgh,,,,Seafood and fish and chips by the harbour,,Yes
+Edinburgh,Oink,Grab_and_Go,Old Town,,,https://www.google.com/maps/search/?api=1&query=Oink%20Old%20Town%20Edinburgh,,,,Hog roast rolls; easy between pubs,,Yes
+Edinburgh,Mary's Milk Bar,Grab_and_Go,Grassmarket,,,https://www.google.com/maps/search/?api=1&query=Mary%27s%20Milk%20Bar%20Grassmarket%20Edinburgh,,,,Ice cream stop in the Grassmarket,,Yes
+Edinburgh,Edinburgh Castle,Sight,Old Town,,,https://www.google.com/maps/search/?api=1&query=Edinburgh%20Castle%20Old%20Town%20Edinburgh,tourist_trap,,Book ahead,Allow 2-3 hours; best on a non-match day,,Yes
+Edinburgh,Arthur's Seat,Sight,Holyrood Park,,,https://www.google.com/maps/search/?api=1&query=Arthur%27s%20Seat%20Holyrood%20Park%20Edinburgh,,,,Allow 1.5-2 hours; check the weather and daylight,,Yes
+Edinburgh,Greyfriars Kirkyard,Sight,Old Town,,,https://www.google.com/maps/search/?api=1&query=Greyfriars%20Kirkyard%20Old%20Town%20Edinburgh,,,,Short walk; free,,Yes
+Edinburgh,Calton Hill,Sight,City Centre,,,https://www.google.com/maps/search/?api=1&query=Calton%20Hill%20City%20Centre%20Edinburgh,,,,Short climb; good city views,,Yes
