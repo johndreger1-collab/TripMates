@@ -77,8 +77,8 @@ creation (`updateTrip`).
 ## Defects found in the live scripts (11 Nov 2026)
 
 All small. Re-checked against the cloned code in R0: every item below is
-confirmed. **1-5, 10 and 11 are fixed in R0** (in git; live once the owner runs
-`clasp push`). 6-9 carry into the rewrite.
+confirmed. **1-5, 8, 10 and 11 are fixed in R0** (in git; live once the owner runs
+`clasp push`). 6, 7 and 9 carry into the rewrite; 12 is about the tests.
 
 1. *(Fixed in R0.)* **Phase 7 styles are placeholders.** `Styles.html` contains literally
    `.nudgebar { ... }`, `.nudgebar .btn-row { ... }` and `.homefab.wind { ... }`
@@ -99,13 +99,26 @@ confirmed. **1-5, 10 and 11 are fixed in R0** (in git; live once the owner runs
    trip. The rewrite fixes it properly with an action allow-list.
 7. **Members can open and edit the Sheet directly** (a consequence of
    "Execute as: User accessing"). The rewrite fixes this.
-8. **No `updateTrip`.** City, dates, fixture and kickoff cannot be changed after creation.
+8. *(Fixed in the old app in R0, D21.)* **No `updateTrip`.** City, dates,
+   fixture and kickoff could not be changed after creation. The trip owner now
+   has **Edit trip** on the Trip tab; edits reach other phones through the
+   live sync.
 9. **Route "Mark visited" does not record an ARRIVE check-in**, so the place does
    not become Been. Owner decided it should (D14); build it in R7.
 10. *(Fixed in R0.)* `Code.gs` header comment is out of date (still describes Phase 1).
 11. *(Found and fixed in R0.)* **Stray text on the map screen.** `Index.html`
     had the literal text `+ Add place:` just before the "Search Google Maps"
-    button, so it showed on the map.
+    button, so it showed on the map. The button itself had no position and sat
+    under "+ Add place" and "Get me home"; it now sits in the right-hand button
+    column, above "+ Add place".
+12. **Two editor tests assume a fresh spreadsheet** (found in R0, owner's run of
+    11 Nov 2026). `runPhase2Tests` "getTripData returns everything" fails when
+    `PacingEnabled` is not the default `false`; `runPhase6Tests` "Edinburgh
+    starter list loads once" fails when the Seed tab already holds other
+    Edinburgh rows, and **it writes the built-in 29-row list into the real Seed
+    tab** (27 rows were added on 11 Nov; the owner is checking them). Neither
+    is an app bug. Fix the tests in the rewrite (R2) so they never depend on or
+    change real Settings or Seed rows.
 
 Fixed since the 8 October snapshots: Phase 6 is wired in; Get me home is a
 floating button; `cleanupTestData_` now deletes `Routes` rows.
@@ -137,6 +150,11 @@ syntax check; the new styles were checked in a browser, light and dark.
 Owner steps to finish R0:
 1. ~~`clasp push`~~ **Done 11 Nov 2026**; the live project matches git. Phones
    still run the old deployment version until step 3.
+   Owner's editor run (11 Nov): all suites, smoke tests and live checks pass
+   except the two test-assumption failures in defect 12. Suggest order passed
+   on the phone. Edit trip and the moved "Search Google Maps" button were
+   added afterwards: push again, then run `runEditTripTests` and
+   `runEditTripPublicSmokeTest`.
 2. In the editor, run `runPhase1Tests` … `runPhase7Tests` and the
    `…PublicSmokeTest` / `runPhase2LiveChecks` functions. All must pass.
 3. When happy, Deploy → Manage deployments → edit → New version, and check on

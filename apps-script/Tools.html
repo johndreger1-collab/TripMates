@@ -410,6 +410,95 @@
     document.body.classList.remove('noscroll');
   }
 
+  // ---------------------------------------------------------------- edit trip (owner)
+  var ET = null;   // the open Edit trip form
+
+  /** An ISO time as the value a datetime-local input wants, in this phone's time zone. */
+  function toLocalInput(iso) {
+    var d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return '';
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + 'T' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+
+  function openEditTrip() {
+    if (!isOwner()) { App.toast('Only the trip owner can edit the trip.', true); return; }
+    var t = S.trip;
+    ET = { inputs: {}, saving: false };
+    var root = $('edittrip');
+    clear(root);
+    root.hidden = false;
+    root.scrollTop = 0;
+    document.body.classList.add('noscroll');
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { id: 'edittrip-title', tabindex: '-1', text: 'Edit trip' }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: closeEditTrip })
+    ]));
+    ET.msg = h('p', { class: 'add-msg', role: 'status', 'aria-live': 'polite' });
+    root.appendChild(ET.msg);
+    function field(key, label, attrs, value, help) {
+      attrs.id = 'et-' + key;
+      var el = h('input', attrs);
+      el.value = value || '';
+      ET.inputs[key] = el;
+      root.appendChild(h('div', { class: 'field' }, [h('label', { for: attrs.id, text: label }), el, help ? h('p', { class: 'muted', text: help }) : null]));
+    }
+    field('city', 'Main city', { type: 'text', maxlength: '80', autocomplete: 'off' }, t.city);
+    field('startDate', 'First day (optional)', { type: 'date' }, t.startDate);
+    field('endDate', 'Last day (optional)', { type: 'date' }, t.endDate);
+    field('fixture', 'Match, if there is one (optional)', { type: 'text', maxlength: '120', autocomplete: 'off', placeholder: 'e.g. Scotland v Ireland' }, t.fixture);
+    field('kickoff', 'Kickoff (optional)', { type: 'datetime-local' }, toLocalInput(t.kickoffIso),
+      'In this phone\'s time zone. Match day mode starts and ends around this time; clear it to turn match day off.');
+    root.appendChild(h('p', { class: 'muted', text: 'Changes reach the rest of the group within a few seconds. Lodging and the ground are set as places in the Trip tab.' }));
+    ET.save = h('button', { type: 'button', class: 'btn big', id: 'edittrip-save', text: 'Save trip', onclick: saveEditTrip });
+    root.appendChild(h('div', { class: 'sticky-save' }, [ET.save]));
+    var ti = $('edittrip-title'); if (ti) ti.focus();
+  }
+
+  function saveEditTrip() {
+    var st = ET;
+    if (!st || st.saving) return;
+    var t = S.trip, v = {};
+    Object.keys(st.inputs).forEach(function (k) { v[k] = st.inputs[k].value.trim(); });
+    function showErr(text) { st.msg.textContent = text; st.msg.className = 'add-msg err'; App.toast(text, true); }
+    if (!v.city) { showErr('Enter the main city for the trip.'); st.inputs.city.focus(); return; }
+    var kickoffIso = '';
+    if (v.kickoff) {
+      var d = new Date(v.kickoff);
+      if (isNaN(d.getTime())) { showErr('Kickoff must be a valid date and time.'); return; }
+      kickoffIso = d.toISOString();
+    }
+    var changed = { tripId: t.tripId }, any = false;
+    function diff(key, val, old) { if (val !== String(old || '')) { changed[key] = val; any = true; } }
+    diff('city', v.city, t.city);
+    diff('startDate', v.startDate, t.startDate);
+    diff('endDate', v.endDate, t.endDate);
+    diff('fixture', v.fixture, t.fixture);
+    if (v.kickoff !== toLocalInput(t.kickoffIso)) { changed.kickoffIso = kickoffIso; any = true; }
+    if (!any) { closeEditTrip(); App.toast('Nothing changed'); return; }
+    st.saving = true;
+    st.save.disabled = true;
+    st.save.textContent = 'Saving...';
+    App.api('updateTrip', changed).then(function (nt) {
+      if (S.trip && S.trip.tripId === nt.tripId) S.trip = nt;
+      if (ET === st) closeEditTrip();
+      App.renderAll();
+      App.toast('Trip saved');
+    }).catch(function (e) {
+      st.saving = false;
+      if (ET === st) { showErr(e.message); st.save.disabled = false; st.save.textContent = 'Save trip'; }
+      else App.toast(e.message, true);
+    });
+  }
+
+  function closeEditTrip() {
+    ET = null;
+    var root = $('edittrip');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
   // ---------------------------------------------------------------- the Trip tab section
   function fill(box) {
     box.appendChild(bulkCard());
@@ -436,8 +525,10 @@
     if (e.key !== 'Escape') return;
     if (PF) { closePinFix(); e.stopImmediatePropagation(); }
     else if (SF) { closeSettings(); e.stopImmediatePropagation(); }
+    else if (ET) { closeEditTrip(); e.stopImmediatePropagation(); }
   }, true);
 
   App.tripTools = tripTools; App.memberTools = memberTools; App.openPinFix = openPinFix; App.openSettings = openSettings;
+  App.openEditTrip = openEditTrip;
 })();
 </script>

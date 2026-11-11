@@ -6,6 +6,8 @@
  *   runPhase2Tests()           Phase 2: derived status and scores, check-ins, settings, link reading.
  *   runPhase1PublicSmokeTest() Real public functions, as YOU.
  *   runPhase2LiveChecks()      One real geocoding lookup (uses a little of the free daily quota).
+ *   runPhase3Tests() ... runPhase7Tests() and their ...PublicSmokeTest() partners: later phases.
+ *   runEditTripTests()         Edit trip (owner changes city, dates, fixture, kickoff); runEditTripPublicSmokeTest().
  *   createDemoTrip()           A demo trip showing every pin colour, status and the split flag.
  *   removeDemoData()           Deletes the demo trip.
  *   cleanupAllTestData()       Removes leftovers if a test run was interrupted.
@@ -1833,6 +1835,116 @@ function runPhase7PublicSmokeTest() {
     var r = getTripRecap(tripId);
     if (r.totalPlaces !== 1 || r.visited !== 0 || r.group.PINT !== 0) throw new Error('getTripRecap returned ' + JSON.stringify(r));
     Logger.log('Phase 7 public smoke test PASSED as ' + me.charAt(0) + '***' + me.slice(me.indexOf('@')));
+    return 'PASSED';
+  } finally {
+    if (tripId) cleanupTestData_([tripId]);
+  }
+}
+
+// ===========================================================================
+// EDIT TRIP TESTS (R0, STATUS defect 8). Run runEditTripTests() and
+// runEditTripPublicSmokeTest() from the Apps Script editor.
+// ===========================================================================
+
+function runEditTripTests() {
+  var results = [], tripIds = [];
+  var stamp = String(new Date().getTime());
+  var owner = 'ownerE.' + stamp + '@example.com';
+  var mate = 'mateE.' + stamp + '@example.com';
+  var stranger = 'strangerE.' + stamp + '@example.com';
+  var tripA = null;
+
+  function check(name, fn) {
+    try { fn(); results.push('PASS  ' + name); }
+    catch (e) { results.push('FAIL  ' + name + '  ->  ' + (e && e.message ? e.message : e)); }
+  }
+  function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+  function expectError(fn, contains) {
+    var threw = false;
+    try { fn(); } catch (e) {
+      threw = true;
+      if (contains && String(e.message).indexOf(contains) < 0) throw new Error('Wrong error: "' + e.message + '"');
+    }
+    if (!threw) throw new Error('Expected an error but none was thrown');
+  }
+  function stored() { return readRowsFresh_('Trips').filter(function (t) { return t.TripID === tripA.tripId; })[0]; }
+
+  try {
+    initSpreadsheet();
+    tripA = createTrip_(owner, { city: TEST_PREFIX + ' E A ' + stamp, displayName: 'Olive', startDate: '2027-03-05', endDate: '2027-03-08' });
+    tripIds.push(tripA.tripId);
+    addMember_(owner, tripA.tripId, mate, 'Matt');
+
+    check('the owner can set the fixture and kickoff on an existing trip', function () {
+      var t = updateTrip_(owner, { tripId: tripA.tripId, fixture: 'Scotland v Ireland', kickoffIso: '2027-03-07T14:10:00.000Z' });
+      assert(t.fixture === 'Scotland v Ireland' && t.kickoffIso === '2027-03-07T14:10:00.000Z' && t.role === 'Owner', 'returned: ' + JSON.stringify(t));
+      var r = stored();
+      assert(r.Fixture === 'Scotland v Ireland' && r.KickoffISO === '2027-03-07T14:10:00.000Z', 'stored: ' + JSON.stringify(r));
+      assert(r.City === TEST_PREFIX + ' E A ' + stamp && r.StartDate === '2027-03-05' && r.EndDate === '2027-03-08', 'fields not sent must not change: ' + JSON.stringify(r));
+      assert(getTripData_(mate, tripA.tripId).trip.kickoffIso === '2027-03-07T14:10:00.000Z', 'mate should see the new kickoff');
+    });
+
+    check('city and dates can change; blank clears optional fields; kickoff is stored as UTC', function () {
+      updateTrip_(owner, { tripId: tripA.tripId, city: TEST_PREFIX + ' E A2 ' + stamp, startDate: '2027-03-06', endDate: '', kickoffIso: '2027-03-07T15:10:00+01:00' });
+      var r = stored();
+      assert(r.City === TEST_PREFIX + ' E A2 ' + stamp && r.StartDate === '2027-03-06' && r.EndDate === '', 'stored: ' + JSON.stringify(r));
+      assert(r.KickoffISO === '2027-03-07T14:10:00.000Z', 'kickoff: ' + r.KickoffISO);
+      updateTrip_(owner, { tripId: tripA.tripId, kickoffIso: '', fixture: '' });
+      r = stored();
+      assert(r.KickoffISO === '' && r.Fixture === '', 'should clear: ' + JSON.stringify(r));
+    });
+
+    check('only the owner can edit, and only their own trip', function () {
+      expectError(function () { updateTrip_(mate, { tripId: tripA.tripId, fixture: 'x' }); }, 'Only the trip owner');
+      expectError(function () { updateTrip_(stranger, { tripId: tripA.tripId, fixture: 'x' }); }, 'not a member');
+      expectError(function () { updateTrip_(owner, { tripId: 'no-such-trip', fixture: 'x' }); }, 'not a member');
+      expectError(function () { updateTrip_(owner, { fixture: 'x' }); }, 'A trip is required');
+      assert(stored().Fixture === '', 'nothing should have changed');
+    });
+
+    check('bad input is refused and nothing is saved', function () {
+      expectError(function () { updateTrip_(owner, { tripId: tripA.tripId, city: '  ' }); }, 'City is required');
+      expectError(function () { updateTrip_(owner, { tripId: tripA.tripId, startDate: '2027-02-30' }); }, 'real date');
+      expectError(function () { updateTrip_(owner, { tripId: tripA.tripId, kickoffIso: 'tomorrow' }); }, 'valid date and time');
+      expectError(function () { updateTrip_(owner, { tripId: tripA.tripId, endDate: '2027-03-01' }); }, 'end date cannot be before');
+      var r = stored();
+      assert(r.StartDate === '2027-03-06' && r.EndDate === '', 'stored: ' + JSON.stringify(r));
+    });
+
+    check('text that looks like a formula is stored as text', function () {
+      updateTrip_(owner, { tripId: tripA.tripId, fixture: '=Scotland v Ireland' });
+      assert(updateTrip_(owner, { tripId: tripA.tripId }).fixture === '=Scotland v Ireland', 'fixture should read back unchanged');
+    });
+
+    check('an edit reaches the other phone through getSync', function () {
+      var before = getSync_(mate, tripA.tripId, '', '', '');
+      var quiet = getSync_(mate, tripA.tripId, '', before.stamp, before.routeStamp);
+      assert(!quiet.changed && quiet.trip === null, 'no change should mean no trip in the reply');
+      updateTrip_(owner, { tripId: tripA.tripId, kickoffIso: '2027-03-07T14:10:00.000Z' });
+      var after = getSync_(mate, tripA.tripId, '', before.stamp, before.routeStamp);
+      assert(after.changed && after.trip && after.trip.kickoffIso === '2027-03-07T14:10:00.000Z' && after.trip.role === 'Member', 'sync: ' + JSON.stringify(after.trip));
+    });
+  } finally {
+    try { cleanupTestData_(tripIds); } catch (e) { results.push('WARN  cleanup failed: ' + e.message); }
+  }
+
+  var failed = results.filter(function (r) { return r.indexOf('FAIL') === 0; }).length;
+  var summary = (results.length - failed) + ' passed, ' + failed + ' failed';
+  Logger.log(results.join('\n') + '\n\n' + summary);
+  return summary;
+}
+
+/** Real public function as YOU: create a trip, edit it, check the edit, remove it. */
+function runEditTripPublicSmokeTest() {
+  var tripId = null;
+  try {
+    var me = currentEmail_();
+    var trip = createTrip({ city: TEST_PREFIX + ' edit public ' + new Date().getTime() });
+    tripId = trip.tripId;
+    var t = updateTrip({ tripId: tripId, fixture: 'Smoke v Test', kickoffIso: '2027-03-07T14:10:00.000Z' });
+    if (t.fixture !== 'Smoke v Test' || t.kickoffIso !== '2027-03-07T14:10:00.000Z') throw new Error('updateTrip returned ' + JSON.stringify(t));
+    if (getTripData(tripId).trip.fixture !== 'Smoke v Test') throw new Error('getTripData did not see the edit');
+    Logger.log('Edit trip public smoke test PASSED as ' + me.charAt(0) + '***' + me.slice(me.indexOf('@')));
     return 'PASSED';
   } finally {
     if (tripId) cleanupTestData_([tripId]);

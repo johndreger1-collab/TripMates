@@ -573,6 +573,7 @@ var sf = sinceFood(S.you);
     var before = sel ? JSON.stringify(sel) : null;
     S.places = r.places;
     S.members = r.members;
+    if (r.trip) S.trip = r.trip;   // city, dates, fixture or kickoff edited on another phone
     S.ratings = {};
     if (S.city && App.cities().indexOf(S.city) < 0) S.city = '';
     App.renderAll();

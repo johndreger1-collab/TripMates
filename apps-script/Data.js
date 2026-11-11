@@ -317,6 +317,37 @@ function createTrip_(email, d) {
   return tripFromRow_(trip, 'Owner');
 }
 
+/**
+ * Owner only. Changes the trip's city, dates, fixture and kickoff. Only the fields present in d are
+ * changed; a blank value clears an optional field. The trip comes from d.tripId, checked against
+ * Members; venue and lodging are not editable here (they come from Anchor places).
+ */
+function updateTrip_(email, d) {
+  email = normEmail_(email);
+  if (!d || typeof d !== 'object' || !d.tripId || typeof d.tripId !== 'string') throw new Error('A trip is required.');
+  var me = requireOwner_(email, d.tripId);
+  function has(k) { return Object.prototype.hasOwnProperty.call(d, k); }
+  var updates = {};
+  if (has('city')) updates.City = cleanText_(d.city, 80, 'City', true);
+  if (has('startDate')) updates.StartDate = cleanDate_(d.startDate, 'Start date');
+  if (has('endDate')) updates.EndDate = cleanDate_(d.endDate, 'End date');
+  if (has('fixture')) updates.Fixture = cleanText_(d.fixture, 120, 'Fixture');
+  if (has('kickoffIso')) updates.KickoffISO = cleanIso_(d.kickoffIso, 'Kickoff');
+
+  return withLock_(function () {
+    var cur = null;
+    readRowsFresh_('Trips').forEach(function (t) { if (t.TripID === d.tripId) cur = t; });
+    if (!cur) throw new Error(MSG_NOT_MEMBER);
+    var merged = Object.assign({}, cur, updates);
+    if (merged.StartDate && merged.EndDate && String(merged.EndDate) < String(merged.StartDate)) {
+      throw new Error('The end date cannot be before the start date.');
+    }
+    writeRow_('Trips', cur._row, cur.TripID, merged);
+    cacheClear_('Trips');
+    return tripFromRow_(merged, me.Role);
+  });
+}
+
 function addMember_(email, tripId, newEmail, displayName) {
   requireOwner_(email, tripId);
   var target = cleanEmail_(newEmail);
@@ -859,7 +890,17 @@ function tripStamp_(tripId) {
     var t = String(c.Timestamp || ''); if (t > cm) cm = t;
   });
   readRows_('Members').forEach(function (m) { if (m.TripID === tripId) mc++; });
-  return [pc, pm, rc, rm, cc, cm, mc].join('|');
+  var tr = '';   // the trip's own details, so an edited kickoff reaches every phone
+  readRows_('Trips').forEach(function (t) {
+    if (t.TripID === tripId) tr = [t.City, t.StartDate, t.EndDate, t.Fixture, t.KickoffISO].join('~');
+  });
+  return [pc, pm, rc, rm, cc, cm, mc, tr].join('|');
+}
+
+function tripForSync_(tripId, role) {
+  var row = null;
+  readRows_('Trips').forEach(function (t) { if (t.TripID === tripId) row = t; });
+  return row ? tripFromRow_(row, role) : null;
 }
 
 /**
@@ -867,7 +908,7 @@ function tripStamp_(tripId) {
  * only when stamp (what the app last saw) no longer matches, otherwise null.
  */
 function getSync_(email, tripId, sinceIso, stamp, routeStamp) {
-  requireMember_(email, tripId);
+  var me = requireMember_(email, tripId);
   var now = tripStamp_(tripId);
   var changed = String(stamp === undefined || stamp === null ? '' : stamp) !== now;
   var rs = routeStamp_(tripId);
@@ -875,6 +916,7 @@ function getSync_(email, tripId, sinceIso, stamp, routeStamp) {
     serverTime: nowIso_(), stamp: now, changed: changed,
     places: changed ? getPlaces_(email, tripId) : null,
     members: changed ? getMembers_(email, tripId) : null,
+    trip: changed ? tripForSync_(tripId, me.Role) : null,
     checkIns: getCheckIns_(email, tripId, sinceIso),
     routeStamp: rs,
     routes: rs !== String(routeStamp === undefined || routeStamp === null ? '' : routeStamp) ? getRoutes_(email, tripId) : null
@@ -1562,6 +1604,7 @@ function getTripRecap_(email, tripId) {
 
 function getMyTrips() { return getMyTrips_(currentEmail_()); }
 function createTrip(tripData) { return createTrip_(currentEmail_(), tripData); }
+function updateTrip(tripData) { return updateTrip_(currentEmail_(), tripData); }
 function addMember(tripId, email, displayName) { return addMember_(currentEmail_(), tripId, email, displayName); }
 function getMembers(tripId) { return getMembers_(currentEmail_(), tripId); }
 function getPlaces(tripId) { return getPlaces_(currentEmail_(), tripId); }

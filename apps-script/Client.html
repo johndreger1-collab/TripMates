@@ -638,7 +638,10 @@ var s = viewScore(p), c = S.settings;    return s < c.scoreRed ? 'red' : s < c.s
       t.fixture ? h('p', { text: t.fixture }) : null,
       tripDates(t) ? h('p', { class: 'muted', text: tripDates(t) }) : null,
       t.kickoffIso ? h('p', { class: 'muted', text: 'Kickoff: ' + fmtKickoff(t.kickoffIso) }) : null,
-      h('p', { class: 'muted', text: 'Your role: ' + t.role })
+      h('p', { class: 'muted', text: 'Your role: ' + t.role }),
+      t.role === 'Owner' && App.openEditTrip
+        ? h('button', { type: 'button', class: 'btn secondary', id: 'btn-edit-trip', text: 'Edit trip', onclick: App.openEditTrip })
+        : null
     ]));
 
 if (App.tripLive) body.appendChild(App.tripLive());

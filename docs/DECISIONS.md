@@ -96,3 +96,13 @@ keeps the first diff honest.
 nearest-neighbour + 2-opt reorder in `Route.html` (straight-line distances,
 visited stops stay put, nothing changes until Apply). R11's "route
 auto-optimisation" therefore means porting it, not designing it.
+
+**D21. Edit trip is added to the old app now, not left for R8** (owner, 11 Nov
+2026). The owner wants to set the fixture and kickoff on the existing trip
+before March. `updateTrip_` (owner only, script lock, only the fields sent are
+changed, blank clears an optional field) changes City, StartDate, EndDate,
+Fixture and KickoffISO. Venue and lodging stay with Anchor places, as now.
+The kickoff is entered in the phone's own time zone and stored as UTC ISO.
+`tripStamp_` now includes those five fields and `getSync` returns `trip` when
+the stamp changes, so the other phones see an edit within one poll. R8 ports
+the same rules to the API action `updateTrip`.
