@@ -205,11 +205,15 @@ details.cardbox summary { min-height: 44px; display: flex; align-items: center; 
 /* ---------- app bar city picker ---------- */
 .appbar select { width: auto; max-width: 40%; margin: 0; min-height: 44px; }
 .appbar .btn { min-height: 44px; padding: 0 12px; }
-.appbar .btn { min-height: 44px; padding: 0 12px; }
 
 /* ---------- Phase 7 ---------- */
-.nudgebar { ... }
-.nudgebar .btn-row { ... }
-.homefab.wind { ... }
-</style>
+/* Food nudge: a card-coloured banner with a thick warn edge, so it reads apart from the green match bar. */
+.nudgebar { flex: 0 0 auto; padding: 8px 12px; background: var(--card); color: var(--fg); font-size: 15px;
+  border-bottom: 1px solid var(--line); border-left: 6px solid var(--warn); }
+.nudgebar strong { color: var(--warn); }
+.nudgebar .btn-row { margin: 8px 0 2px; }
+.nudgebar .btn-row .btn { flex: 1 1 90px; padding: 0 10px; }
+/* Wind-down: Get me home turns solid and gains a ring; its text does not change. */
+.homefab.wind { background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--bg), 0 0 0 7px var(--accent), 0 2px 8px rgba(0,0,0,.35); }
 </style>

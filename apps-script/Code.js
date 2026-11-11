@@ -1,11 +1,14 @@
 /**
- * Code.gs: the web app entry point.
+ * Code.gs: the web app entry point (HtmlService UI, Phases 0-7).
  *
- * The app is served at the normal URL. Add ?page=phase1 to open the Phase 1 check
- * page, which is still the way to add members until the Trip tools arrive in Phase 6.
+ * doGet serves Index.html, which pulls in Styles, Map, Client, AddPlace, Rate,
+ * Live, Route, Home, Tools and Extras through include(). Members are managed in
+ * the Trip tab (Phase 6). ?page=phase1 still opens the old Phase 1 check page,
+ * kept for testing only.
  *
  * Everything else lives elsewhere: Setup.gs (sheet layout), Auth.gs (who may do
- * what), Data.gs (the data layer) and Geo.gs (geocoding and link reading).
+ * what), Data.gs (the data layer), Geo.gs (geocoding and link reading) and
+ * Tests.gs (editor-only test suites).
  */
 
 function doGet(e) {
