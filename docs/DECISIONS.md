@@ -81,3 +81,18 @@ needed. Built in R12, after cutover, so it cannot put the March trip at risk.
 
 *Add entries below as Phase R0 records Level UP's conventions (language, folder
 layout, lint, tests, service worker, deploy).*
+
+**D19. R0 tooling: clasp 3, plain JavaScript, `.js` files, docs' default layout**
+(Nov 2026). Level UP's source was not available, so the defaults in
+ARCHITECTURE.md stand (D15). `clasp` 3.4.1, run with `npx @google/clasp`, no
+global install. clasp 3 saves server files as `.js`; the Apps Script editor
+still shows them as `.gs`, so `Data.gs` in the docs is `apps-script/Data.js`
+on disk. Server code stays plain JavaScript (V8), not TypeScript. The live
+project's manifest is unchanged (`executeAs: USER_ACCESSING`) until R2.
+*Why:* clasp's default extension needs no config, and a byte-for-byte baseline
+keeps the first diff honest.
+
+**D20. Route "Suggest order" already exists** (found in R0). Phase 7 built a
+nearest-neighbour + 2-opt reorder in `Route.html` (straight-line distances,
+visited stops stay put, nothing changes until Apply). R11's "route
+auto-optimisation" therefore means porting it, not designing it.
