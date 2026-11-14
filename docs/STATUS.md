@@ -10,8 +10,8 @@ The original Apps Script app is **feature-complete through Phase 7 (v1.1)**,
 every file passes a syntax check, and the owner has tested Phases 0-7 on phones.
 A handful of small defects are listed below. The next trip is in **early March
 2027**, so there is time to migrate first; the old app stays as the fallback.
-R0 put the live code in GitHub (`apps-script/`). Next: finish R0 (owner pushes
-the fixes and runs the editor tests, see below), then Phase R1.
+R0 is complete (14 Nov 2026): the live code is in GitHub (`apps-script/`), the
+old app's small defects are fixed and Edit trip is added. Next: Phase R1.
 
 ## Repository
 
@@ -140,33 +140,26 @@ floating button; `cleanupTestData_` now deletes `Routes` rows.
 
 ## Next phase and schedule
 
-**R0: Repository baseline: code done, owner steps left.**
+**R0: Repository baseline: complete (14 Nov 2026).**
 
-Done (11 Nov 2026): `apps-script/` holds the live project exactly as cloned
-(commit "Baseline: live Apps Script project…"); defects 1-5, 10 and 11 are fixed
-in separate commits; every server file and every inline `<script>` passes a
-syntax check; the new styles were checked in a browser, light and dark.
+- `apps-script/` holds the live project (baseline commit as cloned, then
+  separate fix commits); the live project matches git after each push.
+- Fixed in the old app: defects 1-5, 8 (Edit trip, D21), 10 and 11, plus the
+  "Search Google Maps" button position.
+- Owner's editor run: every suite, smoke test and live check passes, except
+  the two test-assumption failures in defect 12. `runEditTripTests`,
+  `runEditTripPublicSmokeTest` and `runPhase4Tests` (after the sync change) pass.
+- Owner's phone checks pass: stray text gone, food nudge and wind-down styles,
+  Suggest order, map buttons not overlapping, Edit trip with match day showing
+  on both phones, and no Edit trip button for a member.
+- A new deployment version is live, so the phones run all of the above.
+- Still to do: the owner is checking the 27 Edinburgh rows the Phase 6 test
+  added to the Seed tab (defect 12).
 
-Owner steps to finish R0:
-1. ~~`clasp push`~~ **Done 11 Nov 2026**; the live project matches git. Phones
-   still run the old deployment version until step 3.
-   Owner's editor run (11 Nov): all suites, smoke tests and live checks pass
-   except the two test-assumption failures in defect 12. Suggest order passed
-   on the phone. Edit trip and the moved "Search Google Maps" button were
-   added afterwards and pushed on 14 Nov (live matches git); run
-   `runEditTripTests`, `runEditTripPublicSmokeTest` and `runPhase4Tests`.
-2. In the editor, run `runPhase1Tests` … `runPhase7Tests` and the
-   `…PublicSmokeTest` / `runPhase2LiveChecks` functions. All must pass.
-3. When happy, Deploy → Manage deployments → edit → New version, and check on
-   both phones: the map screen has no stray `+ Add place:` text; the food
-   nudge (`PacingEnabled=true`) and wind-down look right; and route
-   **Suggest order** works (zig-zag route of 4+ pinned stops → Suggest → Not
-   now changes nothing → Apply reorders and the other phone sees it within
-   ~20 s → Suggest again says "already about as short" → a visited stop stays
-   put → button disabled with one unvisited stop).
+**Next: R1** (spike: sign-in, API, PWA on both phones). It needs the Google
+Cloud OAuth client from SETUP §2.
 
-Then **R1** (spike: sign-in, API, PWA on both phones). Skip R0b; the old app is
-tested and is the fallback.
+Skip R0b; the old app is tested and is the fallback.
 
 Suggested schedule for an early-March trip (about 16 weeks):
 
