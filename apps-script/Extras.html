@@ -1,0 +1,117 @@
+<script>
+/**
+ * Extras.html: Phase 7 extras. Shares helpers with Client.html through App.
+ *   Search Google Maps  links that open Google Maps searches centred on you (or your places). No API, no key.
+ *   Trip recap          the Trip tab's summary of places, scores, drinks and pint prices.
+ */
+(function () {
+  'use strict';
+  var h = App.h, $ = App.$, clear = App.clear, S = App.S;
+  var SEARCHES = [['Pubs', 'pubs'], ['Restaurants', 'restaurants'], ['Takeaway and grab and go', 'takeaway food'],
+                  ['Whisky bars', 'whisky bar'], ['Cocktail bars', 'cocktail bar'], ['Things to see', 'tourist attractions']];
+
+  // ---------------------------------------------------------------- search shortcuts
+  function centre() {
+    if (S.pos) return { lat: S.pos.lat, lng: S.pos.lng, you: true };
+    var n = App.nearPoint();
+    return n ? { lat: n.lat, lng: n.lng, you: false } : null;
+  }
+  function searchUrl(term, c) {
+    if (!c) return 'https://www.google.com/maps/search/' + encodeURIComponent(term + ' ' + (S.trip ? S.trip.city : ''));
+    return 'https://www.google.com/maps/search/' + encodeURIComponent(term) + '/@' + c.lat.toFixed(5) + ',' + c.lng.toFixed(5) + ',16z';
+  }
+  function paintFind() {
+    var root = $('find');
+    clear(root);
+    var c = centre();
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { id: 'find-title', tabindex: '-1', text: 'Search in Google Maps' }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Close', onclick: closeFind })
+    ]));
+    root.appendChild(h('p', { class: 'muted', text: c ? (c.you ? 'Searches are centred on where you are now.' : 'Location is off, so searches are centred on your saved places.') : 'No location and no pins yet, so searches use the trip city.' }));
+    SEARCHES.forEach(function (s) {
+      root.appendChild(h('a', { class: 'btn', style: 'width:100%;margin:0 0 10px', href: searchUrl(s[1], c), target: '_blank', rel: 'noopener', text: s[0] }));
+    });
+    root.appendChild(h('div', { class: 'cardbox', style: 'margin:12px 0' }, [
+      h('h2', { text: 'Found something good?' }),
+      h('p', { text: 'Open it in Google Maps, copy the link from the address bar of a desktop browser, then use + Add place and Paste link. Share links from the phone app cannot be read because they hide the location.' }),
+      h('button', { type: 'button', class: 'btn secondary', text: '+ Add place', onclick: function () { closeFind(); App.openAdd(); } })
+    ]));
+  }
+  function openFind() {
+    if (!S.trip) return;
+    var root = $('find');
+    root.hidden = false; root.scrollTop = 0;
+    document.body.classList.add('noscroll');
+    paintFind();
+    var t = $('find-title'); if (t) t.focus();
+    App.locate(true).then(function (ok) { if (ok && !root.hidden) paintFind(); });   // freshen the position quietly
+  }
+  function closeFind() {
+    var root = $('find');
+    root.hidden = true; clear(root);
+    document.body.classList.remove('noscroll');
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !$('find').hidden) { closeFind(); e.stopImmediatePropagation(); }
+  }, true);
+  $('btn-find').addEventListener('click', openFind);
+
+  // ---------------------------------------------------------------- trip recap
+  var R = { tripId: '', data: null, loading: false, error: '' };
+
+  function line(text) { return h('p', { text: text }); }
+
+  function paintRecap(box) {
+    var d = R.data;
+    var kids = [h('h2', { text: 'Trip recap' })];
+    if (R.error) kids.push(h('p', { class: 'warnline', role: 'status', text: '\u26a0 ' + R.error }));
+    if (!d) {
+      kids.push(h('p', { class: 'muted', text: 'Places visited, best rated, the biggest disagreement, drink totals and pint prices for this trip.' }));
+    } else {
+      kids.push(line('Visited ' + d.visited + ' of ' + d.totalPlaces + ' places (' + d.rated + ' rated).'));
+      if (d.topRated.length) {
+        kids.push(h('div', { class: 'label', text: 'Top rated' }));
+        kids.push(h('ul', { class: 'activity' }, d.topRated.map(function (p, i) {
+          return h('li', { text: (i + 1) + '. ' + p.name + ' \u00b7 ' + Math.round(p.score) + (p.split ? ' (split decision)' : '') });
+        })));
+      }
+      if (d.biggestSplit) kids.push(line('Biggest disagreement: ' + d.biggestSplit.name + ', ' + d.biggestSplit.spread + ' points apart.'));
+      var g = d.group;
+      kids.push(line('Group total: ' + g.PINT + ' pints \u00b7 ' + g.WHISKY + ' whiskies \u00b7 ' + g.OTHER_DRINK + ' other drinks \u00b7 ' + g.FOOD + ' food.'));
+      if (d.people.length > 1) {
+        kids.push(h('ul', { class: 'activity' }, d.people.map(function (p) {
+          return h('li', { text: p.name + ': ' + p.PINT + ' pints, ' + p.WHISKY + ' whiskies, ' + p.OTHER_DRINK + ' other, ' + p.FOOD + ' food' });
+        })));
+      }
+      if (d.cheapestPint) kids.push(line('Cheapest pint: ' + App.money(d.cheapestPint.price) + ' at ' + d.cheapestPint.name + '.'));
+      if (d.dearestPint && d.dearestPint.name !== (d.cheapestPint && d.cheapestPint.name)) kids.push(line('Dearest pint: ' + App.money(d.dearestPint.price) + ' at ' + d.dearestPint.name + '.'));
+    }
+    kids.push(h('button', { type: 'button', class: 'btn secondary', id: 'recap-go', disabled: R.loading,
+      text: R.loading ? 'Loading...' : (d ? 'Refresh recap' : 'Show recap'), onclick: loadRecap }));
+    box.appendChild(h('div', { class: 'cardbox' }, kids));
+  }
+
+  function repaint() { var b = $('trip-recap'); if (b) { clear(b); paintRecap(b); } }
+
+  function loadRecap() {
+    if (R.loading || !S.trip) return;
+    var id = R.tripId;
+    R.loading = true; R.error = '';
+    repaint();
+    App.api('getTripRecap', id).then(function (d) { if (R.tripId === id) R.data = d; })
+      .catch(function (e) { if (R.tripId === id) R.error = e.message; })
+      .then(function () { if (R.tripId === id) R.loading = false; repaint(); });
+  }
+
+  function recapCard() {
+    var box = h('div', { id: 'trip-recap' });
+    if (!S.trip) return box;
+    if (R.tripId !== S.trip.tripId) R = { tripId: S.trip.tripId, data: null, loading: false, error: '' };
+    paintRecap(box);
+    return box;
+  }
+
+  App.recapCard = recapCard;
+})();
+</script>

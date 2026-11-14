@@ -1,0 +1,620 @@
+<script>
+/**
+ * Live.html: everything "live" in Phase 4. Shares helpers with Client.html through App.
+ *
+ *   1. Live sync     every RefreshSeconds ask the server for new check-ins and a change stamp.
+ *                    The full place list is downloaded only when the stamp changed. Silent (no
+ *                    loading bar), paused while the tab is hidden, caught up when you return.
+ *   2. Nearby        a chip at the start of the filter chips, then a ~5 / ~10 / ~15 min radius.
+ *   3. Check in      pick a place (nearest first), confirm, record ARRIVE. Leave records LEAVE.
+ *   4. Trip tab      drink tally, mood, who is doing what, and a feed of recent check-ins.
+ *
+ * Check-ins are append-only, so "undo" adds a -1 entry rather than deleting anything.
+ */
+(function () {
+  'use strict';
+  var h = App.h, $ = App.$, clear = App.clear, S = App.S;
+
+  var TALLY = [
+    { type: 'PINT', btn: '+ Pint', one: 'pint', many: 'pints' },
+    { type: 'WHISKY', btn: '+ Whisky', one: 'whisky', many: 'whiskies' },
+    { type: 'OTHER_DRINK', btn: '+ Other drink', one: 'other drink', many: 'other drinks' },
+    { type: 'FOOD', btn: '+ Food', one: 'food', many: 'food' }
+  ];
+  var MOODS = ['Fresh', 'Warming up', 'Feeling it', 'Time to eat', 'Winding down'];
+  var RADII = [5, 10, 15];
+
+  // ---------------------------------------------------------------- helpers
+  function cis() { return S.checkIns || []; }
+
+  /** Like App.api but with no loading bar, for the background poll. */
+  function silent(name) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var r = google.script.run.withSuccessHandler(resolve)
+        .withFailureHandler(function (e) { reject(new Error(e && e.message ? e.message : String(e))); });
+      r[name].apply(r, args);
+    });
+  }
+
+  function relTime(iso) {
+    var mins = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+    if (isNaN(mins)) return '';
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + ' min ago';
+    var hrs = Math.floor(mins / 60);
+    return hrs + ' h' + (mins % 60 ? ' ' + (mins % 60) + ' min' : '') + ' ago';
+  }
+
+  /** "Today" runs from 5 am local time, so a late night stays on one day. */
+  function dayStartMs() {
+    var d = new Date();
+    var s = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 5, 0, 0, 0);
+    if (d < s) s.setDate(s.getDate() - 1);
+    return s.getTime();
+  }
+
+  function byTime(a, b) { return a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0; }
+
+  /** Adds check-ins we have not seen (matched by id). Returns how many were new. */
+  function merge(rows) {
+    var have = {};
+    cis().forEach(function (c) { have[c.checkInId] = true; });
+    var added = 0;
+    if (!S.checkIns) S.checkIns = [];
+    rows.forEach(function (c) {
+      if (have[c.checkInId]) return;
+      have[c.checkInId] = true;
+      S.checkIns.push(c);
+      added++;
+    });
+    if (added) {
+      var cutoff = new Date(Date.now() - 48 * 3600000).toISOString();
+      S.checkIns = S.checkIns.filter(function (c) { return c.timestamp >= cutoff; }).sort(byTime);
+    }
+    return added;
+  }
+
+  function toRow(res) {
+    return { checkInId: res.checkInId, tripId: res.tripId, userEmail: res.userEmail, placeId: res.placeId || '',
+      type: res.type, value: String(res.value === undefined || res.value === null ? '' : res.value), timestamp: res.timestamp };
+  }
+
+  // ---------------------------------------------------------------- tally, mood, whereabouts
+  /**
+   * Today's tally for one person. Each +1 is pushed on a stack for its type and each -1 pops it,
+   * so an undo removes the entry it undid, and the "last drink" time is right afterwards.
+   */
+  function tallyFor(email) {
+    var start = dayStartMs();
+    var stacks = { PINT: [], WHISKY: [], OTHER_DRINK: [], FOOD: [] };
+    cis().slice().sort(byTime).forEach(function (c) {
+      if (c.userEmail !== email || !stacks[c.type] || Date.parse(c.timestamp) < start) return;
+      if (c.value === '-1') stacks[c.type].pop(); else stacks[c.type].push(c.timestamp);
+    });
+    var t = { PINT: stacks.PINT.length, WHISKY: stacks.WHISKY.length, OTHER_DRINK: stacks.OTHER_DRINK.length, FOOD: stacks.FOOD.length,
+      lastDrink: null, lastAny: null, lastAnyType: null };
+    Object.keys(stacks).forEach(function (type) {
+      var st = stacks[type];
+      if (!st.length) return;
+      var top = st[st.length - 1];
+      if (type !== 'FOOD' && (!t.lastDrink || top > t.lastDrink)) t.lastDrink = top;
+      if (!t.lastAny || top > t.lastAny) { t.lastAny = top; t.lastAnyType = type; }
+    });
+    t.drinks = t.PINT + t.WHISKY + t.OTHER_DRINK;
+    return t;
+  }
+
+  function currentMood(email) {
+    var m = null;
+    cis().forEach(function (c) { if (c.userEmail === email && c.type === 'MOOD') m = c; });
+    return m ? m.value : null;
+  }
+
+  /** The person's latest ARRIVE, if nothing later says LEAVE. */
+  function whereIs(email) {
+    var last = null;
+    cis().forEach(function (c) { if (c.userEmail === email && (c.type === 'ARRIVE' || c.type === 'LEAVE')) last = c; });
+    return last && last.type === 'ARRIVE' ? last : null;
+  }
+
+  function placeName(id) { var p = id ? App.byId(id) : null; return p ? p.name : 'a place'; }
+
+  function describe(c) {
+    switch (c.type) {
+      case 'ARRIVE': return 'arrived at ' + placeName(c.placeId);
+      case 'LEAVE': return 'left ' + placeName(c.placeId);
+      case 'SKIP': return 'skipped ' + placeName(c.placeId);
+      case 'MOOD': return 'mood: ' + c.value;
+      case 'PINT': return c.value === '-1' ? 'undid a pint' : 'had a pint';
+      case 'WHISKY': return c.value === '-1' ? 'undid a whisky' : 'had a whisky';
+      case 'OTHER_DRINK': return c.value === '-1' ? 'undid a drink' : 'had another drink';
+      case 'FOOD': return c.value === '-1' ? 'undid a food entry' : 'had some food';
+      default: return c.type.toLowerCase();
+    }
+  }
+ // ---------------------------------------------------------------- food nudge and wind-down (Phase 7)
+ var EAT = ['Restaurant', 'Grab_and_Go'];
+ var COUNTED = { PINT: true, WHISKY: true, OTHER_DRINK: true, FOOD: true };
+
+ function pacingOn() { return !!(S.settings && S.settings.pacingEnabled); }
+
+ function moodRow(email) {
+   var m = null;
+   cis().forEach(function (c) { if (c.userEmail === email && c.type === 'MOOD') m = c; });
+   return m;
+ }
+
+ /** Your drinks (pints, whiskies, other) since your last food entry today. An undo removes the entry it undid. */
+ function sinceFood(email) {
+   var start = dayStartMs(), ev = [];
+   cis().slice().sort(byTime).forEach(function (c) {
+     if (c.userEmail !== email || !COUNTED[c.type] || Date.parse(c.timestamp) < start) return;
+     if (c.value === '-1') {
+       for (var i = ev.length - 1; i >= 0; i--) { if (ev[i].type === c.type) { ev.splice(i, 1); break; } }
+     } else ev.push({ type: c.type, ts: c.timestamp });
+   });
+   var lastFood = -1;
+   ev.forEach(function (e, i) { if (e.type === 'FOOD') lastFood = i; });
+   return { drinks: ev.length - 1 - lastFood, foodAt: lastFood >= 0 ? ev[lastFood].ts : '' };
+ }
+
+ /** A mood only counts as a nudge until you next log food. */
+ function liveMood(email, foodAt) {
+   var m = moodRow(email);
+   return m && (!foodAt || m.timestamp > foodAt) ? m.value : '';
+ }
+
+ /** null, or { drinks, mood, key } when the food nudge should show. */
+ function foodNudge() {
+   if (!pacingOn()) return null;
+   var sf = sinceFood(S.you), mood = liveMood(S.you, sf.foodAt);
+   var limit = Number(S.settings.pacingFoodNudgeDrinks) || 4;
+   if (!(sf.drinks >= limit || mood === 'Feeling it' || mood === 'Time to eat')) return null;
+   var key = sf.drinks + ':' + mood;
+   return key === S.nudgeDismissKey ? null : { drinks: sf.drinks, mood: mood, key: key };
+ }
+
+ function windDown() {
+   if (!pacingOn()) return false;
+   if (currentMood(S.you) === 'Winding down') return true;
+   var wh = Number(S.settings.pacingWindDownHour), hr = new Date().getHours();
+   if (!isFinite(wh)) wh = 21;
+   return wh >= 5 ? (hr >= wh || hr < 5) : (hr >= wh && hr < 5);
+ }
+
+ /** Used by Client.html's score sort. Big numbers, so the boosted type leads the list. Nothing is hidden. */
+ function pacingBoost(p) {
+   var nd = S.nudge;
+   if (!nd || p.category === 'Anchor') return 0;
+   if (nd.food && EAT.indexOf(p.category) >= 0) return 3000;
+   if (nd.wind && p.category === 'Whisky_Bar') return nd.food ? 1500 : 3000;
+   return 0;
+ }
+
+ function showFood() {
+   S.filters = { Restaurant: true, Grab_and_Go: true };
+   if (S.screen !== 'map' && S.screen !== 'list') App.showScreen('list');
+   App.renderAll();
+   var ctl = App.getMapCtl();
+   if (S.screen === 'map' && ctl) ctl.fit();
+ }
+
+ function paintNudge(bar, f) {
+   clear(bar);
+   bar.hidden = !f;
+   if (!f) return;
+   var why = f.drinks > 0 ? f.drinks + (f.drinks === 1 ? ' drink' : ' drinks') + ' since your last food.'
+     : (f.mood === 'Time to eat' ? 'You said it is time to eat.' : 'You said you are feeling it.');
+   bar.appendChild(h('strong', { text: 'Food stop?' }));
+   bar.appendChild(h('span', { text: ' ' + why + ' Restaurants and Grab & Go are ranked first in the List. Your call.' }));
+   bar.appendChild(h('div', { class: 'btn-row' }, [
+     h('button', { type: 'button', class: 'btn', text: 'Show food', onclick: showFood }),
+     h('button', { type: 'button', class: 'btn secondary', text: 'I ate', onclick: function () { logCheckIn({ type: 'FOOD', value: '1' }, 'Food logged'); } }),
+     h('button', { type: 'button', class: 'btn secondary', text: 'Not now', onclick: function () { S.nudgeDismissKey = f.key; nudgeUpdate(); } })
+   ]));
+ }
+
+ /** Recomputes the nudge state, redraws the banner, and re-sorts the list only when the state changed. */
+ function nudgeUpdate() {
+   var bar = $('nudgebar'), home = $('btn-home');
+   if (!bar || !S.trip) return;
+   var f = foodNudge(), wind = windDown();
+   S.nudge = { food: !!f, wind: wind };
+   if (home) home.classList.toggle('wind', wind);
+   paintNudge(bar, f);
+
+   // Mood "Time to eat" pre-selects the food filters, once, when you change to it (not when the trip opens).
+   var mood = pacingOn() ? currentMood(S.you) : null, pre = false;
+   if (S.moodSeen === undefined) S.moodSeen = mood;
+   else if (mood !== S.moodSeen) {
+     S.moodSeen = mood;
+     if (mood === 'Time to eat') { S.filters = { Restaurant: true, Grab_and_Go: true }; pre = true; }
+   }
+   var key = !!f + '|' + wind;
+   if (pre || key !== S.nudgeKey) { S.nudgeKey = key; App.renderAll(); }
+ }
+  // ---------------------------------------------------------------- Trip tab: "Tonight"
+  var tallyBusy = false;
+
+  function card(kids) { return h('div', { class: 'cardbox' }, kids); }
+
+  function logCheckIn(payload, doneText) {
+    if (tallyBusy) return Promise.resolve();
+    tallyBusy = true;
+    paintTripLive();
+    payload.tripId = S.trip.tripId;
+    return App.api('addCheckIn', payload).then(function (res) {
+      merge([toRow(res)]);
+      if (doneText) App.toast(doneText);
+    }).catch(App.fail).then(function () { tallyBusy = false; paintTripLive(); });
+  }
+
+  function memberLine(m) {
+    var t = tallyFor(m.email);
+    var parts = [t.drinks + ' ' + (t.drinks === 1 ? 'drink' : 'drinks')];
+    if (t.FOOD) parts.push(t.FOOD + ' food');
+    var mood = currentMood(m.email);
+    if (mood) parts.push(mood);
+    if (t.lastDrink) parts.push('last drink ' + relTime(t.lastDrink));
+    var at = whereIs(m.email);
+    if (at) parts.push('at ' + placeName(at.placeId));
+    return h('li', {}, [
+      m.displayName + (m.email === S.you ? ' (you)' : ''),
+      h('div', { class: 'muted', text: parts.join(' \u00b7 ') })
+    ]);
+  }
+
+  function paintInto(box) {
+    var t = tallyFor(S.you);
+    var mood = currentMood(S.you);
+var sf = sinceFood(S.you);
+
+    var mine = TALLY.map(function (x) { return t[x.type] + ' ' + (t[x.type] === 1 ? x.one : x.many); }).join(' \u00b7 ');
+    var row = h('div', { class: 'btn-row' }, TALLY.map(function (x) {
+      return h('button', { type: 'button', class: 'btn', disabled: tallyBusy, text: x.btn, onclick: function () { logCheckIn({ type: x.type, value: '1' }); } });
+    }));
+    var undoLabel = t.lastAny ? 'Undo last (' + TALLY.filter(function (x) { return x.type === t.lastAnyType; })[0].one + ')' : 'Undo last';
+    var undoBtn = h('button', { type: 'button', class: 'btn secondary', disabled: tallyBusy || !t.lastAny, text: undoLabel,
+      onclick: function () { logCheckIn({ type: t.lastAnyType, value: '-1' }, 'Undone'); } });
+
+    box.appendChild(card([
+      h('h2', { text: 'Tonight' }),
+      h('p', { class: 'muted', text: 'Tap to log it. Counts run from 5 am, and your friends see them within about 20 seconds.' }),
+      row,
+      h('p', { class: 'ytally', text: 'You: ' + mine }),
+           pacingOn() ? h('p', { class: 'muted', text: 'Since your last food: ' + sf.drinks + (sf.drinks === 1 ? ' drink' : ' drinks') + ' (nudge at ' + (Number(S.settings.pacingFoodNudgeDrinks) || 4) + ').' }) : null,
+      t.lastDrink ? h('p', { class: 'muted', text: 'Last drink ' + relTime(t.lastDrink) }) : null,
+      h('div', { class: 'btn-row' }, [
+        undoBtn,
+        h('button', { type: 'button', class: 'btn secondary', text: 'Check in at a place', onclick: function () { openCheckIn(); } })
+      ]),
+      h('div', { class: 'label', text: 'How are you feeling?' }),
+      h('div', { class: 'tagchips', role: 'group', 'aria-label': 'Mood' }, MOODS.map(function (m) {
+        return h('button', { type: 'button', class: 'fchip', 'aria-pressed': String(mood === m), disabled: tallyBusy, text: m,
+          onclick: function () { if (mood !== m) logCheckIn({ type: 'MOOD', value: m }); } });
+      }))
+    ]));
+
+    box.appendChild(card([
+      h('h2', { text: 'The group' }),
+      h('ul', { class: 'members' }, S.members.map(memberLine))
+    ]));
+
+    var feed = cis().filter(function (c) { return true; }).slice().sort(byTime).reverse().slice(0, 10);
+    box.appendChild(card([
+      h('h2', { text: 'Recent activity' }),
+      feed.length
+        ? h('ul', { class: 'activity' }, feed.map(function (c) {
+            return h('li', { text: App.nameOf(c.userEmail) + ' \u00b7 ' + describe(c) + ' \u00b7 ' + relTime(c.timestamp) });
+          }))
+        : h('p', { class: 'muted', text: 'Nothing yet. Check-ins from everyone appear here.' }),
+      h('p', { class: 'muted sync-note', text: S.lastSyncAt ? 'Live updates: last checked ' + new Date(S.lastSyncAt).toLocaleTimeString('en-GB') + '.' : '' })
+    ]));
+  }
+
+  function tripLive() {
+    var box = h('div', { id: 'trip-live' });
+    paintInto(box);
+    return box;
+  }
+
+   function paintTripLive() {
+   nudgeUpdate();
+   var box = $('trip-live');
+   if (!box || !S.trip) return;
+   clear(box);
+   paintInto(box);
+ }
+
+  // ---------------------------------------------------------------- Check in screen
+  var CI = null;
+  var CE = {};
+
+  function openCheckIn() {
+    if (!S.trip) return;
+    CI = { sel: null, q: '', saving: false };
+    var root = $('checkin');
+    clear(root);
+    root.hidden = false;
+    root.scrollTop = 0;
+    document.body.classList.add('noscroll');
+
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { id: 'ci-title', tabindex: '-1', text: 'Check in' }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: closeCheckIn })
+    ]));
+    CE.here = h('div', {});
+    CE.msg = h('p', { class: 'add-msg', role: 'status', 'aria-live': 'polite' });
+    var q = h('input', { type: 'text', id: 'ci-q', maxlength: '100', autocomplete: 'off', placeholder: 'Search by name or area' });
+    q.addEventListener('input', function () { CI.q = q.value; renderCiList(); });
+    CE.list = h('div', {});
+    CE.save = h('button', { type: 'button', class: 'btn big', id: 'ci-save', text: 'Choose a place', onclick: confirmCheckIn });
+    CE.save.disabled = true;
+    root.appendChild(CE.here);
+    root.appendChild(CE.msg);
+    root.appendChild(h('div', { class: 'field' }, [h('label', { for: 'ci-q', text: 'Where are you?' }), q]));
+    root.appendChild(CE.list);
+    root.appendChild(h('div', { class: 'sticky-save' }, [CE.save]));
+    renderHere();
+    renderCiList();
+    var t = $('ci-title'); if (t) t.focus();
+  }
+
+  function closeCheckIn() {
+    CI = null; CE = {};
+    var root = $('checkin');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
+  function renderHere() {
+    clear(CE.here);
+    var at = whereIs(S.you);
+    if (!at) return;
+    CE.here.appendChild(h('div', { class: 'cardbox', style: 'margin:0 0 12px' }, [
+      h('p', { text: 'You checked in at ' + placeName(at.placeId) + ' ' + relTime(at.timestamp) + '.' }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Leave ' + placeName(at.placeId), onclick: function () { leave(at); } })
+    ]));
+  }
+
+  function renderCiList() {
+    if (!CI) return;
+    clear(CE.list);
+    var q = CI.q.trim().toLowerCase();
+    var items = S.places.filter(function (p) {
+      return !q || (p.name + ' ' + (p.area || '')).toLowerCase().indexOf(q) >= 0;
+    });
+    items.sort(function (a, b) {
+      if (S.pos) {
+        var da = App.walkMin(a), db = App.walkMin(b);
+        var r = (da === null ? 1e9 : da) - (db === null ? 1e9 : db);
+        if (r) return r;
+      }
+      return a.name.localeCompare(b.name);
+    });
+    if (!S.pos) {
+      CE.list.appendChild(h('button', { type: 'button', class: 'btn secondary', text: 'Use my location to show the nearest first',
+        onclick: function () { App.locate(false).then(renderCiList); } }));
+    }
+    if (!items.length) { CE.list.appendChild(h('p', { class: 'empty', text: 'No places match.' })); return; }
+    items.slice(0, 40).forEach(function (p) {
+      var walk = App.fmtWalk(App.walkMin(p));
+      CE.list.appendChild(h('button', { type: 'button', class: 'row-item', 'aria-pressed': String(CI.sel === p.placeId),
+        onclick: function () { CI.sel = p.placeId; renderCiList(); updateSave(); } }, [
+        h('span', { class: 'grow' }, [
+          h('div', { class: 'name', text: p.name }),
+          h('div', { class: 'sub', text: [p.category === 'Anchor' ? 'Anchor' : App.CAT_LABEL[p.category], p.area].filter(Boolean).join(' \u00b7 ') })
+        ]),
+        h('span', { class: 'walk', text: walk })
+      ]));
+    });
+  }
+
+  function updateSave() {
+    var p = CI && CI.sel ? App.byId(CI.sel) : null;
+    CE.save.disabled = !p;
+    CE.save.textContent = p ? 'Check in at ' + p.name : 'Choose a place';
+  }
+
+  /** ARRIVE marks the place Been, which cannot be undone, so it takes a chosen place and a confirm tap. */
+  function confirmCheckIn() {
+    var st = CI;
+    if (!st || st.saving || !st.sel) return;
+    var p = App.byId(st.sel);
+    if (!p) return;
+    var c = { tripId: S.trip.tripId, placeId: p.placeId, type: 'ARRIVE' };
+    if (S.pos) { c.lat = App.round6(S.pos.lat); c.lng = App.round6(S.pos.lng); }
+    st.saving = true;
+    CE.save.disabled = true;
+    CE.save.textContent = 'Checking in...';
+    App.api('addCheckIn', c).then(function (res) {
+      merge([toRow(res)]);
+      p.status = 'Been';
+      if (CI === st) closeCheckIn();
+      App.renderAll();
+      paintTripLive();
+      App.toast('Checked in at ' + p.name);
+      App.openCard(p.placeId);
+    }).catch(function (e) {
+      st.saving = false;
+      App.toast(e.message, true);
+      if (CI === st) { CE.msg.textContent = e.message; CE.msg.className = 'add-msg err'; updateSave(); }
+    });
+  }
+
+  function leave(at) {
+    var st = CI;
+    var c = { tripId: S.trip.tripId, placeId: at.placeId, type: 'LEAVE' };
+    if (S.pos) { c.lat = App.round6(S.pos.lat); c.lng = App.round6(S.pos.lng); }
+    App.api('addCheckIn', c).then(function (res) {
+      merge([toRow(res)]);
+      if (CI === st) closeCheckIn();
+      paintTripLive();
+      App.toast('Left ' + placeName(at.placeId));
+    }).catch(App.fail);
+  }
+
+  // Escape closes this screen first (capture phase, so Client.html's handler does not also close the place card).
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && CI) { closeCheckIn(); e.stopImmediatePropagation(); }
+  }, true);
+  $('btn-checkin').addEventListener('click', openCheckIn);
+
+  // ---------------------------------------------------------------- Nearby
+  function defaultRadius() {
+    var n = Number(S.settings && S.settings.nearbyDefaultMinutes);
+    return RADII.indexOf(n) >= 0 ? n : 10;
+  }
+
+  function chip(text, pressed, onclick, label) {
+    return h('button', { type: 'button', class: 'fchip', 'aria-pressed': String(pressed), 'aria-label': label || null, text: text, onclick: onclick });
+  }
+
+  /** Called by Client.html's renderChips, before the "All" chip. */
+  function nearbyChips(box) {
+    box.appendChild(chip('Nearby', !!S.nearby, toggleNearby, 'Only show places near you'));
+    if (S.nearby) {
+      RADII.forEach(function (m) {
+        box.appendChild(chip('~' + m + ' min', S.radius === m, function () { setRadius(m); }, 'Within about ' + m + ' minutes walk'));
+      });
+    }
+  }
+
+  function afterNearby() {
+    App.renderAll();
+    var ctl = App.getMapCtl();
+    if (S.screen === 'map' && ctl) ctl.fit();
+    if (S.nearby && !App.filtered().length) App.toast('Nothing within about ' + S.radius + ' min of you. Try a bigger radius.');
+  }
+
+  function toggleNearby() {
+    if (S.nearby) {
+      S.nearby = false;
+      if (S.prevSort) { S.sort = S.prevSort; S.prevSort = null; $('sort-select').value = S.sort; }
+      afterNearby();
+      return;
+    }
+    App.locate(false).then(function (ok) {
+      if (!ok) return;                      // locate() has already explained why
+      S.nearby = true;
+      if (!S.radius) S.radius = defaultRadius();
+      S.prevSort = S.sort;
+      S.sort = 'distance';
+      $('sort-select').value = 'distance';
+      afterNearby();
+    });
+  }
+
+  function setRadius(m) { S.radius = m; afterNearby(); }
+
+  /** Nearby only means something if the position is fresh, so it is renewed on each poll while Nearby is on. */
+  function refreshPosition() {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      S.pos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+      var ctl = App.getMapCtl();
+      if (ctl) ctl.setMe(S.pos.lat, S.pos.lng, S.pos.acc);
+      App.renderMap();
+      App.renderList();
+    }, function () { /* keep the last known position */ }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 });
+  }
+
+  // ---------------------------------------------------------------- live sync
+  var running = false, timer = null, inflight = false, fails = 0, warned = false;
+
+  function interval() { return Math.max(5, Number(S.settings && S.settings.refreshSeconds) || 20) * 1000; }
+  /** Ask for a minute of overlap, so a row written just before the last poll is never missed (ids de-duplicate). */
+  function back(t) { var ms = Date.parse(t); if (isNaN(ms)) ms = Date.now(); return new Date(ms - 60000).toISOString(); }
+
+  function syncReset(d) {
+    S.checkIns = (d.checkIns || []).slice().sort(byTime);
+    S.stamp = d.stamp || '';
+        S.routeStamp = d.routeStamp || '';
+    if (App.routesLoad) App.routesLoad(d.routes || []);
+    S.since = back(d.serverTime);
+    S.lastSyncAt = Date.now();
+    paintTripLive();
+  }
+
+  function syncStart(d) {
+    syncReset(d);
+    S.radius = defaultRadius();
+    running = true; fails = 0; warned = false;
+    schedule();
+  }
+
+  function syncStop() {
+    running = false;
+    clearTimeout(timer); timer = null;
+    S.nearby = false;
+    if (S.prevSort) { S.sort = S.prevSort; S.prevSort = null; }
+    S.checkIns = []; S.stamp = ''; S.since = '';
+        S.routeStamp = '';
+    if (App.routesReset) App.routesReset();
+        if (App.homeReset) App.homeReset();
+           S.nudge = null; S.nudgeKey = undefined; S.nudgeDismissKey = ''; S.moodSeen = undefined;
+   var nb = $('nudgebar'); if (nb) { nb.hidden = true; clear(nb); }
+   var hb = $('btn-home'); if (hb) hb.classList.remove('wind');
+    if (CI) closeCheckIn();
+  }
+
+  function schedule() { clearTimeout(timer); if (running) timer = setTimeout(tick, interval()); }
+
+  function tick() {
+    if (!running) return;
+    if (document.hidden) { schedule(); return; }     // paused while the tab is hidden
+    poll().then(schedule);
+  }
+
+  function applyPlaces(r) {
+    var sel = S.selectedId ? App.byId(S.selectedId) : null;
+    var before = sel ? JSON.stringify(sel) : null;
+    S.places = r.places;
+    S.members = r.members;
+    if (r.trip) S.trip = r.trip;   // city, dates, fixture or kickoff edited on another phone
+    S.ratings = {};
+    if (S.city && App.cities().indexOf(S.city) < 0) S.city = '';
+    App.renderAll();
+    if (!S.selectedId) return;
+    var np = App.byId(S.selectedId);
+    var armed = $('btn-been') && $('btn-been').textContent.indexOf('Tap again') === 0;   // do not wipe a half-made Mark Been
+    if (!np) App.closeCard();
+    else if (JSON.stringify(np) !== before && !armed) App.renderCard();
+  }
+
+  /** One poll. Never rejects. */
+  function poll() {
+    var trip = S.trip;
+    if (!trip || inflight) return Promise.resolve();
+    inflight = true;
+    return silent('getSync', trip.tripId, S.since || '', S.stamp || '', S.routeStamp || '').then(function (r) {
+      if (!running || !S.trip || S.trip.tripId !== trip.tripId) return;
+      fails = 0; warned = false;
+      S.lastSyncAt = Date.now();
+      S.since = back(r.serverTime);
+      var added = merge(r.checkIns || []);
+      if (r.changed) applyPlaces(r);
+            if (r.routes && App.routesLoad) { S.routeStamp = r.routeStamp; App.routesLoad(r.routes); }
+      S.stamp = r.stamp;
+           nudgeUpdate();
+      if (S.nearby) refreshPosition();
+      var box = $('trip-live');
+      if (box && (added || !box.contains(document.activeElement))) paintTripLive();
+    }).catch(function (e) {
+      fails++;
+      if (fails >= 3 && !warned) { warned = true; App.toast('Live updates are having trouble (' + e.message + '). Still trying.', true); }
+    }).then(function () { inflight = false; });
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && running) { clearTimeout(timer); tick(); }
+  });
+
+  App.nearbyChips = nearbyChips;
+  App.syncStart = syncStart; App.syncReset = syncReset; App.syncStop = syncStop; App.syncNow = poll;
+  App.tripLive = tripLive; App.openCheckIn = openCheckIn; App.closeCheckIn = closeCheckIn;
+   App.pacingBoost = pacingBoost; App.nudgeUpdate = nudgeUpdate;
+})();
+</script>

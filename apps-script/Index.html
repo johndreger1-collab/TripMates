@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <title>Rugby Trip</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <div id="busy" hidden></div>
+
+  <div id="app">
+    <header class="appbar" id="appbar" hidden>
+      <div class="title">
+        <h1 id="trip-title">Rugby Trip</h1>
+        <p class="muted" id="trip-sub"></p>
+      </div>
+      <select id="city-select" aria-label="Show places in" hidden></select>
+      <button type="button" class="btn secondary" id="btn-refresh">Refresh</button>
+    </header>
+       <div id="matchbar" class="matchbar" hidden role="status"></div>
+   <div id="nudgebar" class="nudgebar" hidden role="status"></div>
+    <div class="screens">
+      <!-- Trip picker / new trip -->
+      <section id="screen-picker" class="screen scroll" aria-label="Choose a trip">
+        <div class="pad">
+          <h2>Your trips</h2>
+          <p class="muted" id="picker-msg">Loading your trips...</p>
+          <div id="trip-list"></div>
+        </div>
+        <details class="cardbox" id="new-trip">
+          <summary>Start a new trip</summary>
+          <div class="field"><label for="nt-city">Main city</label>
+            <input type="text" id="nt-city" maxlength="80" autocomplete="off" placeholder="e.g. Edinburgh"></div>
+          <div class="field"><label for="nt-name">Your name (shown to the group)</label>
+            <input type="text" id="nt-name" maxlength="60" autocomplete="off"></div>
+          <div class="field"><label for="nt-start">First day (optional)</label>
+            <input type="date" id="nt-start"></div>
+          <div class="field"><label for="nt-end">Last day (optional)</label>
+            <input type="date" id="nt-end"></div>
+          <div class="field"><label for="nt-fixture">Match, if there is one (optional)</label>
+            <input type="text" id="nt-fixture" maxlength="120" autocomplete="off" placeholder="e.g. Scotland v Ireland"></div>
+          <div class="field"><label for="nt-kickoff">Kickoff (optional)</label>
+            <input type="datetime-local" id="nt-kickoff"></div>
+          <p class="muted">You can add more cities later: just add a place and type its city. Lodging is added afterwards as a place.</p>
+          <button type="button" class="btn big" id="nt-create">Create trip</button>
+        </details>
+      </section>
+
+      <!-- Map -->
+      <section id="screen-map" class="screen" hidden aria-label="Map">
+        <div class="chipbar" id="chips-map" role="group" aria-label="Filter by type"></div>
+               <div class="viewbar" id="view-map" hidden></div>
+        <div id="map" role="application" aria-label="Map of places"></div>
+        <div class="fabs">
+          <button type="button" class="fab secondary" id="btn-locate">Locate me</button>
+          <button type="button" class="fab secondary" id="btn-checkin">Check in</button>
+          <button type="button" class="fab secondary" id="btn-find">Search Google Maps</button>
+          <button type="button" class="fab" id="btn-add">+ Add place</button>
+        </div>
+      </section>
+
+      <!-- List -->
+      <section id="screen-list" class="screen" hidden aria-label="List of places">
+        <div class="chipbar" id="chips-list" role="group" aria-label="Filter by type"></div>
+               <div class="viewbar" id="view-list" hidden></div>
+        <div class="toolbar">
+          <label for="sort-select">Sort by</label>
+          <select id="sort-select">
+            <option value="score">Score</option>
+            <option value="distance">Distance</option>
+            <option value="status">Status</option>
+            <option value="name">Name</option>
+          </select>
+        </div>
+        <p class="muted pad" id="list-note" style="margin:0;padding-bottom:0">Walking times marked ~ are estimates from a straight line, so hills and lanes can make them differ.</p>
+        <div class="listwrap" id="list"></div>
+      </section>
+
+<!-- Route -->
+     <section id="screen-route" class="screen scroll" hidden aria-label="Route">
+       <div class="route-top" id="route-top"></div>
+       <div id="route-map" class="route-map" role="application" aria-label="Map of the route"></div>
+       <p class="muted pad route-caption">Numbers show the order of the stops. The dashed line is a straight line between stops, so it only approximates the walk.</p>
+       <div id="route-body"></div>
+     </section>
+
+      <!-- Trip -->
+      <section id="screen-trip" class="screen scroll" hidden aria-label="Trip">
+        <div id="trip-body"></div>
+      </section>
+    </div>
+
+    <nav class="tabs" id="tabs" hidden aria-label="Main">
+      <button type="button" class="tab" data-screen="map">Map</button>
+      <button type="button" class="tab" data-screen="list">List</button>
+      <button type="button" class="tab" data-screen="route">Route</button>
+      <button type="button" class="tab" data-screen="trip">Trip</button>
+    </nav>
+  </div>
+
+<button type="button" class="homefab" id="btn-home" hidden>Get me home</button>
+  <aside id="sheet" class="sheet" hidden role="dialog" aria-label="Place details"></aside>
+ <div id="home" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Get me home"></div>
+ <div id="pinfix" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Check a pin"></div>
+ <div id="settings" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Settings"></div>
+ <div id="edittrip" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Edit trip"></div>
+ <div id="find" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Search in Google Maps"></div>
+  <div id="add" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Add a place"></div>
+  <div id="rate" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Rate a place"></div>
+   <div id="checkin" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Check in"></div>
+   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <?!= include('Map'); ?>
+  <?!= include('Client'); ?>
+  <?!= include('AddPlace'); ?>
+   <?!= include('Rate'); ?>
+    <?!= include('Live'); ?>
+     <?!= include('Route'); ?>
+      <?!= include('Home'); ?>
+ <?!= include('Tools'); ?>
+ <?!= include('Extras'); ?>
+</body>
+</html>

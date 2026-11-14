@@ -1,0 +1,534 @@
+<script>
+/**
+ * Tools.html: the Trip tab's tools. Shares helpers with Client.html through App.
+ *
+ *   Add places in bulk   a starter list (Seed tab) or a pasted / chosen CSV. Pins are looked up for you.
+ *   Pins to review       every place with no pin or an unconfirmed one, with a pin checker (search, drag
+ *                        or tap the map, then confirm) and a "Find missing pins" button.
+ *   Members              the owner adds and removes people.
+ *   Settings             the owner edits the values and tag lists kept in the Settings tab.
+ *
+ * What you type is kept in T, so a live update that redraws the Trip tab does not wipe it.
+ */
+(function () {
+  'use strict';
+  var h = App.h, $ = App.$, clear = App.clear, S = App.S;
+
+  var T = { tripId: '', cities: null, loadingCities: false, seedCity: '', csv: '', working: '', result: null,
+    memEmail: '', memName: '', memMsg: null, removeArmed: '' };
+  var armTimer = null;
+
+  function reset() {
+    T = { tripId: S.trip.tripId, cities: null, loadingCities: false, seedCity: '', csv: '', working: '', result: null,
+      memEmail: '', memName: '', memMsg: null, removeArmed: '' };
+  }
+  function isOwner() { return !!S.trip && S.trip.role === 'Owner'; }
+  function card(kids) { return h('div', { class: 'cardbox' }, kids); }
+  function repaint() { var b = $('trip-tools'); if (b) { clear(b); fill(b); } }
+
+  // ---------------------------------------------------------------- bulk import
+  function loadCities() {
+    if (T.cities !== null || T.loadingCities) return;
+    T.loadingCities = true;
+    var id = T.tripId;
+    App.api('getSeedCities').then(function (list) {
+      if (T.tripId !== id) return;
+      T.cities = list;
+      if (!T.seedCity && list.length) {
+        var home = list.filter(function (c) { return S.trip && c.city.toLowerCase() === String(S.trip.city).toLowerCase(); })[0];
+        T.seedCity = (home || list[0]).city;
+      }
+    }).catch(function () { if (T.tripId === id) T.cities = []; }).then(function () { T.loadingCities = false; repaint(); });
+  }
+
+  function describe(label, r) {
+    var lines = [];
+    var head = label + ': ' + r.added + ' added';
+    if (r.duplicates) head += ', ' + r.duplicates + ' already in the trip';
+    if (r.rejected && r.rejected.length) head += ', ' + r.rejected.length + ' skipped';
+    lines.push(head + '.');
+    if (r.geocoded || r.notFound || r.notAttempted) {
+      var pins = 'Pins: ' + r.geocoded + ' found automatically';
+      if (r.notFound) pins += ', ' + r.notFound + ' not found';
+      if (r.notAttempted) pins += ', ' + r.notAttempted + ' left for later';
+      lines.push(pins + '. Anything without a pin is under Pins to review.');
+    }
+    if (r.quotaHit) lines.push('The free daily lookup limit was reached. Try again tomorrow, or place the rest by hand.');
+    if (r.ignoredColumns && r.ignoredColumns.length) lines.push('Ignored columns: ' + r.ignoredColumns.join(', ') + '.');
+    return lines;
+  }
+
+  function runImport(label, call) {
+    if (T.working) return;
+    T.working = label; T.result = null;
+    repaint();
+    call().then(function (res) {
+      T.result = { label: label, res: res, error: '' };
+      T.working = '';
+      if (label === 'CSV') T.csv = '';
+      return App.refresh();
+    }).catch(function (e) {
+      T.working = '';
+      T.result = { label: label, res: null, error: e.message };
+      repaint();
+    });
+  }
+
+  function importSeed() {
+    if (!T.seedCity) return;
+    runImport('Starter list', function () { return App.api('importSeed', S.trip.tripId, T.seedCity); });
+  }
+  function importCsv() {
+    if (!T.csv.trim()) { T.result = { label: 'CSV', res: null, error: 'Paste or choose a CSV first.' }; repaint(); return; }
+    runImport('CSV', function () { return App.api('importCsv', S.trip.tripId, T.csv); });
+  }
+
+  function resultBlock() {
+    if (T.working) return h('p', { class: 'muted', role: 'status', text: 'Working on the ' + T.working.toLowerCase() + '. Finding pins can take a minute or two.' });
+    var r = T.result;
+    if (!r) return null;
+    if (r.error) return h('p', { class: 'warnline', role: 'status', text: '\u26a0 ' + r.error });
+    var kids = describe(r.label, r.res).map(function (l) { return h('p', { text: l }); });
+    var rej = r.res.rejected || [];
+    if (rej.length) {
+      kids.push(h('div', { class: 'label', text: 'Skipped rows' }));
+      kids.push(h('ul', { class: 'activity' }, rej.slice(0, 8).map(function (x) {
+        return h('li', { text: 'Line ' + x.line + (x.name ? ' (' + x.name + ')' : '') + ': ' + x.reason });
+      }).concat(rej.length > 8 ? [h('li', { class: 'muted', text: '...and ' + (rej.length - 8) + ' more.' })] : [])));
+    }
+    return h('div', { role: 'status' }, kids);
+  }
+
+  function bulkCard() {
+    var kids = [h('h2', { text: 'Add places in bulk' })];
+    kids.push(h('div', { class: 'label', text: 'Starter list' }));
+    if (T.cities === null) kids.push(h('p', { class: 'muted', text: 'Loading starter lists...' }));
+    else if (!T.cities.length) kids.push(h('p', { class: 'muted', text: 'No starter lists yet. Run loadStarterSeed in the Apps Script editor to add Edinburgh.' }));
+    else {
+      var sel = h('select', { id: 'tools-seed-city', 'aria-label': 'Starter list' }, T.cities.map(function (c) {
+        return h('option', { value: c.city, text: c.city + ' (' + c.count + ' places)' });
+      }));
+      sel.value = T.seedCity;
+      sel.addEventListener('change', function () { T.seedCity = sel.value; });
+      kids.push(sel);
+      kids.push(h('p', { class: 'muted', text: 'Copies the places into this trip and looks up a pin for each. Places already here are skipped, so it is safe to run twice. These are research starters, not verified listings.' }));
+      kids.push(h('button', { type: 'button', class: 'btn', id: 'tools-seed-go', disabled: !!T.working, text: 'Import starter list', onclick: importSeed }));
+    }
+    kids.push(h('div', { class: 'label', text: 'From a CSV' }));
+    kids.push(h('p', { class: 'muted', text: 'The first row names the columns. Name and Category are needed; City, Area, Lat, Lng, GoogleMapsUrl, LocalTags, MatchDayTags, HoursNote and Notes are optional. Pins are looked up for rows without coordinates.' }));
+    var file = h('input', { type: 'file', id: 'tools-csv-file', accept: '.csv,text/csv,text/plain', 'aria-label': 'Choose a CSV file' });
+    var ta = h('textarea', { id: 'tools-csv', placeholder: 'Name,Category,Area\nThe Example Arms,Pub,Old Town', maxlength: '100000', 'aria-label': 'CSV text' });
+    ta.value = T.csv;
+    ta.addEventListener('input', function () { T.csv = ta.value; });
+    file.addEventListener('change', function () {
+      var f = file.files && file.files[0];
+      if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function () { T.csv = String(rd.result || ''); ta.value = T.csv; };
+      rd.readAsText(f);
+    });
+    kids.push(file);
+    kids.push(ta);
+    kids.push(h('button', { type: 'button', class: 'btn', id: 'tools-csv-go', disabled: !!T.working, text: 'Import CSV', onclick: importCsv }));
+    kids.push(resultBlock());
+    return card(kids);
+  }
+
+  // ---------------------------------------------------------------- pins to review
+  function needsReview(p) { return p.lat === null || p.lat === undefined || !p.coordConfirmed; }
+
+  function findMissing() {
+    if (T.working) return;
+    T.working = 'pin search'; T.result = null; repaint();
+    var found = 0, quota = false;
+    (function loop() {
+      App.api('geocodeMissing', S.trip.tripId).then(function (res) {
+        found += res.found; quota = res.quotaHit;
+        if (res.remaining > 0 && res.found > 0 && !res.quotaHit) return loop();
+      }).then(function () {
+        T.working = '';
+        T.result = { label: 'Pin search', res: { added: 0, duplicates: 0, rejected: [], geocoded: found, notFound: 0, notAttempted: 0, quotaHit: quota }, error: '' };
+        return App.refresh();
+      }).catch(function (e) {
+        T.working = ''; T.result = { label: 'Pin search', res: null, error: e.message }; repaint();
+      });
+    })();
+  }
+
+  function reviewCard() {
+    var list = S.places.filter(needsReview).sort(function (a, b) {
+      var an = a.lat === null ? 0 : 1, bn = b.lat === null ? 0 : 1;
+      return an - bn || a.name.localeCompare(b.name);
+    });
+    var missing = list.filter(function (p) { return p.lat === null; }).length;
+    var kids = [h('h2', { text: 'Pins to review (' + list.length + ')' })];
+    if (!list.length) {
+      kids.push(h('p', { class: 'muted', text: 'Every place has a confirmed pin.' }));
+      return card(kids);
+    }
+    kids.push(h('p', { class: 'muted', text: 'Pins found by lookup can be a street out, and some places have no pin yet. Check each one once and it drops off this list.' }));
+    if (missing) kids.push(h('button', { type: 'button', class: 'btn secondary', id: 'tools-find', disabled: !!T.working, text: 'Find missing pins (' + missing + ')', onclick: findMissing }));
+    list.slice(0, 40).forEach(function (p) {
+      var why = p.lat === null ? 'No pin yet' : 'Pin not confirmed' + (p.address ? ' (found: ' + p.address + ')' : '');
+      kids.push(h('div', { class: 'row-item', style: 'cursor:default;min-height:64px;padding-left:0;padding-right:0;background:transparent', 'data-place': p.placeId }, [
+        h('span', { class: 'grow' }, [
+          h('div', { class: 'name', text: p.name }),
+          h('div', { class: 'sub', text: [p.category === 'Anchor' ? 'Anchor' : App.CAT_LABEL[p.category], p.city].filter(Boolean).join(' \u00b7 ') }),
+          h('div', { class: 'sub flag', text: '\u26a0 ' + why })
+        ]),
+        h('button', { type: 'button', class: 'btn secondary', text: 'Check pin', 'aria-label': 'Check the pin for ' + p.name, onclick: function () { openPinFix(p.placeId); } })
+      ]));
+    });
+    if (list.length > 40) kids.push(h('p', { class: 'muted', text: '...and ' + (list.length - 40) + ' more. Check these first, then the rest will show.' }));
+    return card(kids);
+  }
+
+  // ---------------------------------------------------------------- the pin checker
+  var PF = null;
+
+  function openPinFix(placeId) {
+    var p = App.byId(placeId);
+    if (!p) return;
+    var has = p.lat !== null && p.lat !== undefined;
+    PF = { p: p, lat: has ? p.lat : null, lng: has ? p.lng : null, moved: false, searched: false, address: '', ctl: null, saving: false };
+    var root = $('pinfix');
+    clear(root);
+    root.hidden = false;
+    root.scrollTop = 0;
+    document.body.classList.add('noscroll');
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { id: 'pinfix-title', tabindex: '-1', text: 'Check pin' }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: closePinFix })
+    ]));
+    root.appendChild(h('p', { class: 'label', text: p.name }));
+    root.appendChild(h('p', { class: 'muted', text: [App.CAT_LABEL[p.category], p.area, p.city].filter(Boolean).join(' \u00b7 ') }));
+    PF.msg = h('p', { class: 'add-msg', role: 'status', 'aria-live': 'polite' });
+    root.appendChild(PF.msg);
+    var q = h('input', { type: 'text', id: 'pinfix-q', maxlength: '200', autocomplete: 'off', 'aria-label': 'Search for this place' });
+    q.value = [p.name, p.area, p.city || (S.trip && S.trip.city)].filter(Boolean).join(', ');
+    q.addEventListener('keydown', function (e) { if (e.key === 'Enter') search(q.value); });
+    root.appendChild(h('div', { class: 'field' }, [h('label', { for: 'pinfix-q', text: 'Search' }), q]));
+    root.appendChild(h('button', { type: 'button', class: 'btn', id: 'pinfix-find', text: 'Find on map', onclick: function () { search(q.value); } }));
+    root.appendChild(h('div', { id: 'pinfix-map', class: 'add-map' }));
+    PF.save = h('button', { type: 'button', class: 'btn big', id: 'pinfix-save', text: 'Confirm pin here', onclick: confirmPin });
+    PF.save.disabled = !has;
+    root.appendChild(h('div', { class: 'sticky-save' }, [PF.save]));
+    try {
+      PF.ctl = RTMap.create('pinfix-map', { center: has ? [p.lat, p.lng] : App.tripCentre(), zoom: has ? 17 : 14 });
+    } catch (e) { PF.ctl = null; say('The map could not start (' + e.message + '). Close this and try again.', true); return; }
+    PF.ctl.onTap(function (lat, lng) { setPin(lat, lng, true); say('Pin placed. Drag it or tap again to adjust, then confirm.'); });
+    if (has) {
+      setPin(p.lat, p.lng, false);
+      say(p.address ? 'Found: ' + p.address + '. Drag the pin or tap the map if it is in the wrong place.' : 'Drag the pin or tap the map if it is in the wrong place.');
+    } else say('No pin yet. Search, or tap the map where the place is.');
+    var t = $('pinfix-title'); if (t) t.focus();
+  }
+
+  function say(text, isErr) { if (PF && PF.msg) { PF.msg.textContent = text || ''; PF.msg.className = 'add-msg' + (isErr ? ' err' : ''); } }
+
+  function setPin(lat, lng, byHand) {
+    PF.lat = lat; PF.lng = lng;
+    if (byHand) { PF.moved = true; PF.searched = false; }
+    PF.ctl.setDraft(lat, lng, function (la, ln) { PF.lat = la; PF.lng = ln; PF.moved = true; PF.searched = false; say('Pin moved. Check it is on the right spot, then confirm.'); });
+    PF.save.disabled = false;
+  }
+
+  function search(text) {
+    if (!PF || !PF.ctl) return;
+    var q = String(text || '').trim();
+    if (!q) { say('Type a name or address first.', true); return; }
+    say('Looking up...');
+    var st = PF;
+    App.api('geocodePlace', q, App.nearPoint()).then(function (r) {
+      if (PF !== st) return;
+      if (!r.ok) { say(r.error, true); return; }
+      setPin(r.lat, r.lng, false);
+      PF.searched = true; PF.moved = false; PF.address = r.formatted || '';
+      PF.ctl.flyTo(r.lat, r.lng, 17);
+      say(r.matchNote + ' ' + r.formatted + '. Drag the pin or tap the map to adjust it.');
+    }).catch(function (e) { say(e.message, true); });
+  }
+
+  function confirmPin() {
+    var st = PF;
+    if (!st || st.saving || st.lat === null) return;
+    var p = st.p;
+    var payload = { placeId: p.placeId, lat: App.round6(st.lat), lng: App.round6(st.lng), coordConfirmed: true,
+      coordSource: st.moved ? 'Manual' : (st.searched ? 'Geocoded' : (p.coordSource || 'Manual')) };
+    if (st.searched && st.address) payload.address = st.address;
+    st.saving = true;
+    PF.save.disabled = true;
+    PF.save.textContent = 'Saving...';
+    App.api('updatePlace', payload).then(function (np) {
+      App.upsertPlace(np);
+      if (PF === st) closePinFix();
+      App.renderAll();
+      App.toast('Pin confirmed for ' + np.name);
+    }).catch(function (e) {
+      st.saving = false;
+      App.toast(e.message, true);
+      if (PF === st) { say(e.message, true); PF.save.disabled = false; PF.save.textContent = 'Confirm pin here'; }
+    });
+  }
+
+  function closePinFix() {
+    if (PF && PF.ctl) { try { PF.ctl.destroy(); } catch (e) { /* already gone */ } }
+    PF = null;
+    var root = $('pinfix');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
+  // ---------------------------------------------------------------- members
+  function memberTools() {
+    if (!S.trip) return null;
+    if (!isOwner()) return h('p', { class: 'muted', text: 'Only the trip owner can add or remove people.' });
+    var email = h('input', { type: 'text', id: 'mem-email', inputmode: 'email', autocomplete: 'off', autocapitalize: 'off', maxlength: '120', 'aria-label': 'Their Google email' });
+    email.value = T.memEmail;
+    email.addEventListener('input', function () { T.memEmail = email.value; });
+    var name = h('input', { type: 'text', id: 'mem-name', autocomplete: 'off', maxlength: '60', 'aria-label': 'Their name, shown to the group (optional)' });
+    name.value = T.memName;
+    name.addEventListener('input', function () { T.memName = name.value; });
+    var removable = S.members.filter(function (m) { return m.role !== 'Owner'; });
+    var kids = [
+      h('div', { class: 'label', text: 'Add someone' }),
+      h('div', { class: 'field' }, [h('label', { for: 'mem-email', text: 'Their Google email' }), email]),
+      h('div', { class: 'field' }, [h('label', { for: 'mem-name', text: 'Their name (optional)' }), name]),
+      h('button', { type: 'button', class: 'btn', id: 'mem-add', text: 'Add person', onclick: addMember }),
+      h('p', { class: 'muted', text: 'Also share the spreadsheet with them (Editor), or the app cannot open for them.' })
+    ];
+    if (T.memMsg) kids.push(h('p', { class: T.memMsg.err ? 'warnline' : 'muted', role: 'status', text: (T.memMsg.err ? '\u26a0 ' : '') + T.memMsg.text }));
+    if (removable.length) {
+      kids.push(h('div', { class: 'label', text: 'Remove someone' }));
+      kids.push(h('div', { class: 'btn-row' }, removable.map(function (m) {
+        var armed = T.removeArmed === m.email;
+        return h('button', { type: 'button', class: 'btn secondary', 'data-email': m.email, text: armed ? 'Tap again to remove ' + m.displayName : 'Remove ' + m.displayName,
+          onclick: function () { removeMember(m); } });
+      })));
+      kids.push(h('p', { class: 'muted', text: 'Their ratings and check-ins stay in the trip history.' }));
+    }
+    return h('div', { id: 'member-tools' }, kids);
+  }
+
+  function addMember() {
+    var email = T.memEmail.trim();
+    if (!email) { T.memMsg = { err: true, text: 'Enter their Google email.' }; repaint(); App.renderTrip && 0; return refreshTrip(); }
+    App.api('addMember', S.trip.tripId, email, T.memName.trim()).then(function (m) {
+      T.memEmail = ''; T.memName = '';
+      T.memMsg = { err: false, text: 'Added ' + m.displayName + '. ' + (m.note || '') };
+      return App.refresh();
+    }).catch(function (e) { T.memMsg = { err: true, text: e.message }; refreshTrip(); });
+  }
+
+  function removeMember(m) {
+    if (T.removeArmed !== m.email) {
+      T.removeArmed = m.email;
+      clearTimeout(armTimer);
+      armTimer = setTimeout(function () { T.removeArmed = ''; refreshTrip(); }, 4000);
+      refreshTrip();
+      return;
+    }
+    clearTimeout(armTimer);
+    T.removeArmed = '';
+    App.api('removeMember', S.trip.tripId, m.email).then(function () {
+      T.memMsg = { err: false, text: 'Removed ' + m.displayName + '.' };
+      return App.refresh();
+    }).catch(function (e) { T.memMsg = { err: true, text: e.message }; refreshTrip(); });
+  }
+
+  /** The member tools live inside Client.html's Members card, so redraw the whole Trip tab. */
+  function refreshTrip() { App.renderAll(); }
+
+  // ---------------------------------------------------------------- settings
+  var SF = null;
+
+  function openSettings() {
+    if (!isOwner()) { App.toast('Only the trip owner can change settings.', true); return; }
+    App.api('getSettingsForm').then(function (fields) {
+      SF = { fields: fields, inputs: {}, saving: false };
+      var root = $('settings');
+      clear(root);
+      root.hidden = false;
+      root.scrollTop = 0;
+      document.body.classList.add('noscroll');
+      root.appendChild(h('div', { class: 'add-head' }, [
+        h('h2', { id: 'settings-title', tabindex: '-1', text: 'Settings' }),
+        h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: closeSettings })
+      ]));
+      root.appendChild(h('p', { class: 'muted', text: 'These apply to everyone in every trip on this spreadsheet.' }));
+      SF.msg = h('p', { class: 'add-msg', role: 'status', 'aria-live': 'polite' });
+      root.appendChild(SF.msg);
+      fields.forEach(function (f) {
+        var el;
+        if (f.type === 'enum') {
+          el = h('select', { id: 'set-' + f.key }, f.options.map(function (o) { return h('option', { value: o, text: o }); }));
+        } else if (f.type === 'int' || f.type === 'num') {
+          el = h('input', { type: 'number', id: 'set-' + f.key, min: String(f.min), max: String(f.max), step: f.type === 'int' ? '1' : 'any', inputmode: 'decimal', autocomplete: 'off' });
+        } else {
+          el = h('input', { type: 'text', id: 'set-' + f.key, autocomplete: 'off', autocapitalize: f.type === 'currency' ? 'characters' : 'off', maxlength: f.type === 'tags' ? '600' : '3' });
+        }
+        el.value = f.value;
+        SF.inputs[f.key] = el;
+        root.appendChild(h('div', { class: 'field' }, [h('label', { for: 'set-' + f.key, text: f.label }), el, f.help ? h('p', { class: 'muted', text: f.help }) : null]));
+      });
+      SF.save = h('button', { type: 'button', class: 'btn big', id: 'settings-save', text: 'Save settings', onclick: saveSettings });
+      root.appendChild(h('div', { class: 'sticky-save' }, [SF.save]));
+      var t = $('settings-title'); if (t) t.focus();
+    }).catch(App.fail);
+  }
+
+  function saveSettings() {
+    var st = SF;
+    if (!st || st.saving) return;
+    var changed = {}, any = false;
+    st.fields.forEach(function (f) {
+      var v = st.inputs[f.key].value.trim();
+      if (v !== String(f.value).trim()) { changed[f.key] = v; any = true; }
+    });
+    if (!any) { closeSettings(); App.toast('Nothing changed'); return; }
+    st.saving = true;
+    st.save.disabled = true;
+    st.save.textContent = 'Saving...';
+    App.api('saveSettings', changed).then(function (res) {
+      S.settings = res.settings;
+      if (SF === st) closeSettings();
+      App.renderAll();
+      App.toast('Settings saved');
+    }).catch(function (e) {
+      st.saving = false;
+      if (SF === st) { st.msg.textContent = e.message; st.msg.className = 'add-msg err'; st.save.disabled = false; st.save.textContent = 'Save settings'; }
+      App.toast(e.message, true);
+    });
+  }
+
+  function closeSettings() {
+    SF = null;
+    var root = $('settings');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
+  // ---------------------------------------------------------------- edit trip (owner)
+  var ET = null;   // the open Edit trip form
+
+  /** An ISO time as the value a datetime-local input wants, in this phone's time zone. */
+  function toLocalInput(iso) {
+    var d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return '';
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + 'T' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+
+  function openEditTrip() {
+    if (!isOwner()) { App.toast('Only the trip owner can edit the trip.', true); return; }
+    var t = S.trip;
+    ET = { inputs: {}, saving: false };
+    var root = $('edittrip');
+    clear(root);
+    root.hidden = false;
+    root.scrollTop = 0;
+    document.body.classList.add('noscroll');
+    root.appendChild(h('div', { class: 'add-head' }, [
+      h('h2', { id: 'edittrip-title', tabindex: '-1', text: 'Edit trip' }),
+      h('button', { type: 'button', class: 'btn secondary', text: 'Cancel', onclick: closeEditTrip })
+    ]));
+    ET.msg = h('p', { class: 'add-msg', role: 'status', 'aria-live': 'polite' });
+    root.appendChild(ET.msg);
+    function field(key, label, attrs, value, help) {
+      attrs.id = 'et-' + key;
+      var el = h('input', attrs);
+      el.value = value || '';
+      ET.inputs[key] = el;
+      root.appendChild(h('div', { class: 'field' }, [h('label', { for: attrs.id, text: label }), el, help ? h('p', { class: 'muted', text: help }) : null]));
+    }
+    field('city', 'Main city', { type: 'text', maxlength: '80', autocomplete: 'off' }, t.city);
+    field('startDate', 'First day (optional)', { type: 'date' }, t.startDate);
+    field('endDate', 'Last day (optional)', { type: 'date' }, t.endDate);
+    field('fixture', 'Match, if there is one (optional)', { type: 'text', maxlength: '120', autocomplete: 'off', placeholder: 'e.g. Scotland v Ireland' }, t.fixture);
+    field('kickoff', 'Kickoff (optional)', { type: 'datetime-local' }, toLocalInput(t.kickoffIso),
+      'In this phone\'s time zone. Match day mode starts and ends around this time; clear it to turn match day off.');
+    root.appendChild(h('p', { class: 'muted', text: 'Changes reach the rest of the group within a few seconds. Lodging and the ground are set as places in the Trip tab.' }));
+    ET.save = h('button', { type: 'button', class: 'btn big', id: 'edittrip-save', text: 'Save trip', onclick: saveEditTrip });
+    root.appendChild(h('div', { class: 'sticky-save' }, [ET.save]));
+    var ti = $('edittrip-title'); if (ti) ti.focus();
+  }
+
+  function saveEditTrip() {
+    var st = ET;
+    if (!st || st.saving) return;
+    var t = S.trip, v = {};
+    Object.keys(st.inputs).forEach(function (k) { v[k] = st.inputs[k].value.trim(); });
+    function showErr(text) { st.msg.textContent = text; st.msg.className = 'add-msg err'; App.toast(text, true); }
+    if (!v.city) { showErr('Enter the main city for the trip.'); st.inputs.city.focus(); return; }
+    var kickoffIso = '';
+    if (v.kickoff) {
+      var d = new Date(v.kickoff);
+      if (isNaN(d.getTime())) { showErr('Kickoff must be a valid date and time.'); return; }
+      kickoffIso = d.toISOString();
+    }
+    var changed = { tripId: t.tripId }, any = false;
+    function diff(key, val, old) { if (val !== String(old || '')) { changed[key] = val; any = true; } }
+    diff('city', v.city, t.city);
+    diff('startDate', v.startDate, t.startDate);
+    diff('endDate', v.endDate, t.endDate);
+    diff('fixture', v.fixture, t.fixture);
+    if (v.kickoff !== toLocalInput(t.kickoffIso)) { changed.kickoffIso = kickoffIso; any = true; }
+    if (!any) { closeEditTrip(); App.toast('Nothing changed'); return; }
+    st.saving = true;
+    st.save.disabled = true;
+    st.save.textContent = 'Saving...';
+    App.api('updateTrip', changed).then(function (nt) {
+      if (S.trip && S.trip.tripId === nt.tripId) S.trip = nt;
+      if (ET === st) closeEditTrip();
+      App.renderAll();
+      App.toast('Trip saved');
+    }).catch(function (e) {
+      st.saving = false;
+      if (ET === st) { showErr(e.message); st.save.disabled = false; st.save.textContent = 'Save trip'; }
+      else App.toast(e.message, true);
+    });
+  }
+
+  function closeEditTrip() {
+    ET = null;
+    var root = $('edittrip');
+    root.hidden = true;
+    clear(root);
+    document.body.classList.remove('noscroll');
+  }
+
+  // ---------------------------------------------------------------- the Trip tab section
+  function fill(box) {
+    box.appendChild(bulkCard());
+    box.appendChild(reviewCard());
+    if (isOwner()) {
+      box.appendChild(card([
+        h('h2', { text: 'Settings' }),
+        h('p', { class: 'muted', text: 'Score colours, walking speed, refresh rate, match-day window, tag lists and more.' }),
+        h('button', { type: 'button', class: 'btn secondary', id: 'tools-settings', text: 'Open settings', onclick: openSettings })
+      ]));
+    }
+  }
+
+  function tripTools() {
+    if (!S.trip) return h('div', { id: 'trip-tools' });
+    if (T.tripId !== S.trip.tripId) reset();
+    var box = h('div', { id: 'trip-tools' });
+    fill(box);
+    loadCities();
+    return box;
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (PF) { closePinFix(); e.stopImmediatePropagation(); }
+    else if (SF) { closeSettings(); e.stopImmediatePropagation(); }
+    else if (ET) { closeEditTrip(); e.stopImmediatePropagation(); }
+  }, true);
+
+  App.tripTools = tripTools; App.memberTools = memberTools; App.openPinFix = openPinFix; App.openSettings = openSettings;
+  App.openEditTrip = openEditTrip;
+})();
+</script>
