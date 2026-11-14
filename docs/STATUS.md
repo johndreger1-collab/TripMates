@@ -153,8 +153,8 @@ Owner steps to finish R0:
    Owner's editor run (11 Nov): all suites, smoke tests and live checks pass
    except the two test-assumption failures in defect 12. Suggest order passed
    on the phone. Edit trip and the moved "Search Google Maps" button were
-   added afterwards: push again, then run `runEditTripTests` and
-   `runEditTripPublicSmokeTest`.
+   added afterwards and pushed on 14 Nov (live matches git); run
+   `runEditTripTests`, `runEditTripPublicSmokeTest` and `runPhase4Tests`.
 2. In the editor, run `runPhase1Tests` … `runPhase7Tests` and the
    `…PublicSmokeTest` / `runPhase2LiveChecks` functions. All must pass.
 3. When happy, Deploy → Manage deployments → edit → New version, and check on
